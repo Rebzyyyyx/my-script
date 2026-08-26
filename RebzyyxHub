@@ -1,0 +1,165 @@
+if getgenv().rebzyyxhub_loaded == true then
+    while task.wait(99999999) do end
+end
+
+-- ==========================================
+-- НАСТРОЙКИ ЧАСТИЦ (SPARK TRAIL SETTINGS)
+-- ==========================================
+local ParticleSettings = {
+    Enabled = true,                -- Включить/выключить частицы
+    Target = "SelfOnly",           -- "SelfOnly" или "SelfAndFriends"
+    Texture = "rbxassetid://373435404", -- Текстура Spark
+    Rate = 50,                     -- Количество спавнящихся искр в секунду
+    Lifetime = 0.8,                -- Время жизни каждой искры (сек)
+    Size = 0.6,                    -- Размер искр
+    Speed = 2.0,                   -- Физика: скорость разлета искр
+    SpreadAngle = Vector2.new(60, 60) -- Угол разлета во все стороны
+}
+
+-- Градиент цвета: Фиолетовый -> 45% плавный переход в Белый
+local PurpleColor = Color3.fromRGB(170, 0, 255)
+local WhiteColor = Color3.fromRGB(255, 255, 255)
+local TrailColorSequence = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, PurpleColor),
+    ColorSequenceKeypoint.new(0.55, PurpleColor),
+    ColorSequenceKeypoint.new(1, WhiteColor)
+})
+
+-- ==========================================
+-- СИСТЕМА ФИЗИЧЕСКИХ ИСКР (SPARKS)
+-- ==========================================
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local function createSparkEmitter(attachment)
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "RebzyyxSparkParticle"
+    emitter.Texture = ParticleSettings.Texture
+    emitter.Rate = ParticleSettings.Rate
+    emitter.Lifetime = NumberRange.new(ParticleSettings.Lifetime * 0.6, ParticleSettings.Lifetime)
+    
+    -- Плавное уменьшение размера искры к концу жизни
+    emitter.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, ParticleSettings.Size),
+        NumberSequenceKeypoint.new(0.6, ParticleSettings.Size * 0.8),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    
+    emitter.Color = TrailColorSequence
+    
+    -- Плавное появление и растворение
+    emitter.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.7, 0.2),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+    
+    -- Физика разлета и вращения искр
+    emitter.Speed = NumberRange.new(0.5, ParticleSettings.Speed)
+    emitter.SpreadAngle = ParticleSettings.SpreadAngle
+    emitter.VelocitySpread = 60
+    emitter.Rotation = NumberRange.new(0, 360)
+    emitter.RotSpeed = NumberRange.new(-180, 180)
+    emitter.LightEmission = 1 -- Заставляет искры светиться в темноте
+    emitter.Orientation = Enum.ParticleOrientation.FacingCamera
+    
+    emitter.Parent = attachment
+    return emitter
+end
+
+local function createParticlesForCharacter(char)
+    if not char then return end
+    local root = char:WaitForChild("HumanoidRootPart", 5)
+    if not root then return end
+
+    -- Очистка старых аттачментов и эмиттеров
+    if root:FindFirstChild("RebzyyxSparkAttach") then
+        root.RebzyyxSparkAttach:Destroy()
+    end
+
+    local attach = Instance.new("Attachment")
+    attach.Name = "RebzyyxSparkAttach"
+    attach.Position = Vector3.new(0, -0.8, 0)
+    attach.Parent = root
+
+    createSparkEmitter(attach)
+end
+
+local function handlePlayer(player)
+    if not ParticleSettings.Enabled then return end
+    
+    local isSelf = (player == LocalPlayer)
+    local isFriend = LocalPlayer:IsFriendsWith(player.UserId)
+    
+    if isSelf or (ParticleSettings.Target == "SelfAndFriends" and isFriend) then
+        if player.Character then
+            createParticlesForCharacter(player.Character)
+        end
+        player.CharacterAdded:Connect(function(char)
+            task.wait(0.3)
+            createParticlesForCharacter(char)
+        end)
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    handlePlayer(p)
+end
+Players.PlayerAdded:Connect(handlePlayer)
+
+-- ==========================================
+-- ПЕРЕХВАТЧИК ИНТЕРФЕЙСА (AVERLIK -> REBZYYX)
+-- ==========================================
+local CoreGui = game:GetService("CoreGui")
+
+local function fixText(instance)
+    if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+        if instance.Text:find("Averlik Hub") or instance.Text:find("Averlik") then
+            instance.Text = instance.Text:gsub("Averlik Hub", "RebzyyxHub"):gsub("Averlik", "RebzyyxHub")
+        end
+        instance:GetPropertyChangedSignal("Text"):Connect(function()
+            if instance.Text:find("Averlik Hub") or instance.Text:find("Averlik") then
+                instance.Text = instance.Text:gsub("Averlik Hub", "RebzyyxHub"):gsub("Averlik", "RebzyyxHub")
+            end
+        end)
+    end
+end
+
+local function scanGui(parent)
+    for _, child in ipairs(parent:GetDescendants()) do
+        fixText(child)
+    end
+    parent.DescendantAdded:Connect(fixText)
+end
+
+pcall(function() scanGui(CoreGui) end)
+if LocalPlayer then
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        scanGui(playerGui)
+    end
+end
+
+-- ==========================================
+-- ЗАГРУЗКА СКРИПТА
+-- ==========================================
+local Luarmor = loadstring(game:HttpGet("https://sdkapi-public.luarmor.net/library.lua"))()
+
+local Games = {
+    ["10200395747"] = {id = "c6ccaebf880f5614ee1121cfb0e10740"},
+    ["6035872082"] = {id = "8f607144fa2a449f600b0cf7a0852597"},
+    ["66654135"] = {id = "6223a21ff3757d564b1911e94270a98e"},
+    ["10144280947"] = {id = "c2bda132c0248cfe3f90b98e16d5975e"},
+    ["9855761734"] = {id = "a429d0a4fefdca4f72725e2158ce3e0d"},
+    ["9584852943"] = {id = "7124692d8300ccbd8eb76179ad91f4a7"},
+}
+
+local currentGame = Games[tostring(game.GameId)]
+
+if currentGame then
+    getgenv().rebzyyxhub_loaded = true
+    Luarmor.script_id = currentGame.id
+    Luarmor.load_script()
+else
+    warn("[RebzyyxHub] Игра не поддерживается.")
+end
