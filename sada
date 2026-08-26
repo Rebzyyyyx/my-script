@@ -1,0 +1,375 @@
+-- ==========================================
+-- НАСТРОЙКИ (SETTINGS)
+-- ==========================================
+local Settings = {
+    MaxDistance = 1800, -- Максимальная дистанция видимости ников (в студсах)
+    HealthBarDistance = 250, -- Максимальная дистанция видимости HP бара (в студсах)
+
+    -- Настройки уведомления
+    ShowNotification = true, -- Показывать уведомление при запуске скрипта
+
+    -- Настройки для друзей
+    RainbowFriends = true, -- Радужная подсветка модели (Highlight) для друзей
+    HideFriendsNames = true, -- Скрывать никнейм у друзей
+    CustomFriendName = "[Друн]", -- Текст вместо имени друга
+
+    -- Настройки для остальных игроков
+    HideOtherNames = false, -- Скрывать никнейм у обычных игроков
+    CustomOtherName = "[Игрок]" -- Текст вместо имени обычного игрока
+}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local LocalPlayer = Players.LocalPlayer
+
+local Cache = {} -- [Player] = boolean (IsFriend)
+local ESP = {}   -- [Player] = { root, hl, gui, lbl, hpGui, hpFill, hpGradient, lowHpLbl, humanoid, teamConn }
+
+-- Отправка уведомления о запуске
+if Settings.ShowNotification then
+    task.spawn(function()
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "ESP by XXXSF_ENFP",
+                Text = "Script injected!",
+                Duration = 5
+            })
+        end)
+    end)
+end
+
+-- ==========================================
+-- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+-- ==========================================
+
+-- Конвертация Color3 в HEX
+local function colorToHex(color)
+    return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+end
+
+-- Проверка статуса друга
+local function checkFriendship(player)
+    if Cache[player] ~= nil then
+        return Cache[player]
+    end
+
+    Cache[player] = false
+
+    task.spawn(function()
+        local ok, res = pcall(function()
+            return LocalPlayer:IsFriendsWith(player.UserId)
+        end)
+        Cache[player] = ok and res or false
+    end)
+
+    return Cache[player]
+end
+
+-- Безопасное удаление объектов ESP для персонажа
+local function cleanupCharESP(pData)
+    if not pData then return end
+    if pData.hl then pData.hl:Destroy() end
+    if pData.gui then pData.gui:Destroy() end
+    if pData.hpGui then pData.hpGui:Destroy() end
+    pData.hl = nil
+    pData.gui = nil
+    pData.lbl = nil 
+    pData.root = nil
+    pData.hpGui = nil
+    pData.hpFill = nil
+    pData.hpGradient = nil
+    pData.lowHpLbl = nil
+    pData.humanoid = nil
+end
+
+-- Полная очистка при выходе игрока
+local function cleanupPlayer(player)
+    if ESP[player] then
+        if ESP[player].teamConn then
+            ESP[player].teamConn:Disconnect()
+        end
+        cleanupCharESP(ESP[player])
+        ESP[player] = nil
+    end
+    Cache[player] = nil
+end
+
+-- Обновление цвета ESP (по команде)
+local function updatePlayerColor(player)
+    local data = ESP[player]
+    if not data or not data.hl or not data.hl.Parent then return end
+
+    if not Cache[player] then
+        local teamColor = player.TeamColor and player.TeamColor.Color or Color3.new(1, 1, 1)
+        data.hl.FillColor = teamColor
+        data.hl.OutlineColor = teamColor
+    end
+end
+
+-- Создание ESP для персонажа
+local function setupCharacter(player, char)
+    if player == LocalPlayer then return end
+
+    local data = ESP[player]
+    if not data then return end
+
+    cleanupCharESP(data)
+
+    local head = char:WaitForChild("Head", 10)
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    if not head or not root or not humanoid then return end
+
+    -- Отключение стандартного ника и HP bar Roblox
+    humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+
+    -- Highlight
+    local hl = Instance.new("Highlight")
+    hl.Name = "ESP_HL"
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.Parent = char
+
+    -- BillboardGui для ника
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ESP_GUI"
+    gui.Size = UDim2.new(0, 200, 0, 50)
+    gui.StudsOffset = Vector3.new(0, 3.5, 0)
+    gui.AlwaysOnTop = true
+    gui.Enabled = false
+    gui.Parent = head
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.fromScale(1, 1)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.new(1, 1, 1)
+    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lbl.TextStrokeTransparency = 0
+    lbl.Font = Enum.Font.SourceSansBold
+    lbl.TextSize = 16
+    lbl.RichText = true
+    lbl.Parent = gui
+
+    -- BillboardGui для HP бара
+    local hpGui = Instance.new("BillboardGui")
+    hpGui.Name = "ESP_HP_GUI"
+    hpGui.Size = UDim2.new(0, 6, 0, 50)
+    hpGui.StudsOffset = Vector3.new(-2.2, 0, 0)
+    hpGui.AlwaysOnTop = true
+    hpGui.Enabled = false
+    hpGui.Parent = root
+
+    -- Фон HP бара
+    local hpBG = Instance.new("Frame")
+    hpBG.Size = UDim2.fromScale(1, 1)
+    hpBG.BackgroundColor3 = Color3.new(0, 0, 0)
+    hpBG.BorderSizePixel = 0
+    hpBG.ClipsDescendants = false
+    hpBG.Parent = hpGui
+
+    local bgCorner = Instance.new("UICorner")
+    bgCorner.CornerRadius = UDim.new(1, 0)
+    bgCorner.Parent = hpBG
+
+    -- Заполнение шкалы HP
+    local hpFill = Instance.new("Frame")
+    hpFill.Name = "Fill"
+    hpFill.AnchorPoint = Vector2.new(0, 1)
+    hpFill.Position = UDim2.fromScale(0, 1)
+    hpFill.Size = UDim2.fromScale(1, 1)
+    hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+    hpFill.BorderSizePixel = 0
+    hpFill.Parent = hpBG
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = hpFill
+
+    local hpGradient = Instance.new("UIGradient")
+    hpGradient.Rotation = 90
+    hpGradient.Enabled = false
+    hpGradient.Parent = hpFill
+
+    -- Текст LOW HP! (вдоль полосы здоровья)
+    local lowHpLbl = Instance.new("TextLabel")
+    lowHpLbl.Name = "LowHpLabel"
+    lowHpLbl.Size = UDim2.new(0, 60, 0, 14)
+    lowHpLbl.Position = UDim2.new(1, 4, 0.5, -7)
+    lowHpLbl.BackgroundTransparency = 1
+    lowHpLbl.TextColor3 = Color3.fromRGB(255, 30, 30)
+    lowHpLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lowHpLbl.TextStrokeTransparency = 0
+    lowHpLbl.Font = Enum.Font.SourceSansBold
+    lowHpLbl.TextSize = 13
+    lowHpLbl.Text = "LOW HP!"
+    lowHpLbl.TextXAlignment = Enum.TextXAlignment.Left
+    lowHpLbl.Visible = false
+    lowHpLbl.Parent = hpBG
+
+    -- Сохранение ссылок
+    data.root = root
+    data.hl = hl
+    data.gui = gui
+    data.lbl = lbl
+    data.hpGui = hpGui
+    data.hpFill = hpFill
+    data.hpGradient = hpGradient
+    data.lowHpLbl = lowHpLbl
+    data.humanoid = humanoid
+
+    updatePlayerColor(player)
+end
+
+-- Инициализация игрока
+local function applyESP(player)
+    if player == LocalPlayer then return end
+
+    local teamConn = player:GetPropertyChangedSignal("TeamColor"):Connect(function()
+        updatePlayerColor(player)
+    end)
+
+    ESP[player] = {
+        teamConn = teamConn
+    }
+
+    checkFriendship(player)
+
+    player.CharacterAdded:Connect(function(char)
+        setupCharacter(player, char)
+    end)
+
+    if player.Character then
+        task.spawn(setupCharacter, player, player.Character)
+    end
+end
+
+-- ==========================================
+-- ОСНОВНОЙ ЦИКЛ И ИНИЦИАЛИЗАЦИЯ
+-- ==========================================
+
+RunService.RenderStepped:Connect(function()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+    local rainbow = Color3.fromHSV((tick() % 3) / 3, 1, 1)
+    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2 -- Плавное мигание
+
+    for p, data in pairs(ESP) do
+        if data.gui and data.root and data.root.Parent then
+            local isPlayerFriend = Cache[p]
+
+            -- Радужный Highlight для друзей
+            if Settings.RainbowFriends and isPlayerFriend and data.hl then
+                data.hl.FillColor = rainbow
+                data.hl.OutlineColor = rainbow
+            end
+
+            -- Отображение никнеймов и расстояния
+            if myRoot then
+                local dist = (myRoot.Position - data.root.Position).Magnitude
+                
+                if dist <= Settings.MaxDistance then
+                    local displayName = p.DisplayName
+
+                    if isPlayerFriend then
+                        if Settings.HideFriendsNames then
+                            displayName = Settings.CustomFriendName
+                        end
+                    else
+                        if Settings.HideOtherNames then
+                            displayName = Settings.CustomOtherName
+                        end
+                    end
+
+                    local teamColor = p.TeamColor and p.TeamColor.Color or Color3.new(1, 1, 1)
+                    local nameColorHex = colorToHex(teamColor)
+
+                    data.lbl.Text = string.format("<font color=\"%s\">%s</font>\n[%d studs]", nameColorHex, displayName, math.floor(dist))
+                    data.gui.Enabled = true
+                else
+                    data.gui.Enabled = false
+                end
+
+                -- Отображение HP бара
+                if dist <= Settings.HealthBarDistance and data.hpGui and data.humanoid then
+                    local health = math.clamp(data.humanoid.Health, 0, data.humanoid.MaxHealth)
+                    local maxHealth = math.max(data.humanoid.MaxHealth, 1)
+                    local hpPercent = health / maxHealth
+
+                    data.hpFill.Size = UDim2.fromScale(1, hpPercent)
+
+                    local darkRed = Color3.fromRGB(150, 0, 0)
+                    local brightRed = Color3.fromRGB(255, 30, 30)
+
+                    if isPlayerFriend then
+                        if hpPercent > 0.25 then
+                            data.hpGradient.Enabled = true
+                            data.hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+                            data.hpFill.BackgroundTransparency = (1 - hpPercent) * 0.35
+                            
+                            local sat = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+                            local val = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+
+                            data.hpGradient.Color = ColorSequence.new({
+                                ColorSequenceKeypoint.new(0, Color3.fromHSV(0, sat, val)),
+                                ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.33, sat, val)),
+                                ColorSequenceKeypoint.new(1, Color3.fromHSV(0.66, sat, val))
+                            })
+                            
+                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
+                        else
+                            -- HP <= 25%: Краснеет и пульсирует
+                            data.hpGradient.Enabled = false
+                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
+
+                            if data.lowHpLbl then
+                                data.lowHpLbl.Visible = true
+                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
+                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
+                            end
+                        end
+                    else
+                        -- Обычные игроки
+                        data.hpGradient.Enabled = false
+
+                        if hpPercent <= 0.25 then
+                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
+
+                            if data.lowHpLbl then
+                                data.lowHpLbl.Visible = true
+                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
+                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
+                            end
+                        else
+                            local baseColor = Color3.fromHSV(hpPercent * 0.3, 1, 1)
+                            data.hpFill.BackgroundColor3 = baseColor
+                            data.hpFill.BackgroundTransparency = 0
+
+                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
+                        end
+                    end
+
+                    data.hpGui.Enabled = true
+                elseif data.hpGui then
+                    data.hpGui.Enabled = false
+                end
+            else
+                data.gui.Enabled = false
+                if data.hpGui then data.hpGui.Enabled = false end
+            end
+        end
+    end
+end)
+
+-- Инициализация существующих и новых игроков
+for _, p in ipairs(Players:GetPlayers()) do
+    applyESP(p)
+end
+
+Players.PlayerAdded:Connect(applyESP)
+Players.PlayerRemoving:Connect(cleanupPlayer)
