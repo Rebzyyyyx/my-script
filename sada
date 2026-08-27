@@ -11,7 +11,7 @@ local Settings = {
     -- Настройки для друзей
     RainbowFriends = true, -- Радужная подсветка модели (Highlight) для друзей
     HideFriendsNames = true, -- Скрывать никнейм у друзей
-    CustomFriendName = "[Друн]", -- Текст вместо имени друга
+    CustomFriendName = "[Друг]", -- Текст вместо имени друга
 
     -- Настройки для остальных игроков
     HideOtherNames = false, -- Скрывать никнейм у обычных игроков
@@ -24,7 +24,7 @@ local StarterGui = game:GetService("StarterGui")
 local LocalPlayer = Players.LocalPlayer
 
 local Cache = {} -- [Player] = boolean (IsFriend)
-local ESP = {}   -- [Player] = { root, hl, gui, lbl, hpGui, hpFill, hpGradient, lowHpLbl, humanoid, teamConn }
+local ESP = {}   -- [Player] = { root, hl, gui, lbl, hpGui, hpFill, hpGradient, lowHpLbl, humanoid, teamConn, connections }
 
 -- Отправка уведомления о запуске
 if Settings.ShowNotification then
@@ -69,9 +69,20 @@ end
 -- Безопасное удаление объектов ESP для персонажа
 local function cleanupCharESP(pData)
     if not pData then return end
+    
+    if pData.connections then
+        for _, conn in ipairs(pData.connections) do
+            if conn and conn.Connected then
+                conn:Disconnect()
+            end
+        end
+    end
+    pData.connections = {}
+
     if pData.hl then pData.hl:Destroy() end
     if pData.gui then pData.gui:Destroy() end
     if pData.hpGui then pData.hpGui:Destroy() end
+    
     pData.hl = nil
     pData.gui = nil
     pData.lbl = nil 
@@ -220,6 +231,41 @@ local function setupCharacter(player, char)
     data.lowHpLbl = lowHpLbl
     data.humanoid = humanoid
 
+    -- ==========================================
+    -- СИСТЕМА ЗАЩИТЫ ОТ МИКРОФРИЗОВ И LOW PERF
+    -- ==========================================
+    local connections = {}
+
+    -- Авто-восстановление при удалении (Destroy) объектов оптимизатором
+    local function watchDestroy(obj)
+        local conn = obj.AncestryChanged:Connect(function(_, parent)
+            if not parent and player.Character == char then
+                task.defer(function()
+                    if player.Character == char then
+                        setupCharacter(player, char)
+                    end
+                end)
+            end
+        end)
+        table.insert(connections, conn)
+    end
+
+    watchDestroy(gui)
+    watchDestroy(hpGui)
+    watchDestroy(hl)
+
+    -- Принудительное удержание AlwaysOnTop
+    local connGuiTop = gui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
+        if not gui.AlwaysOnTop then gui.AlwaysOnTop = true end
+    end)
+    local connHpTop = hpGui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
+        if not hpGui.AlwaysOnTop then hpGui.AlwaysOnTop = true end
+    end)
+    table.insert(connections, connGuiTop)
+    table.insert(connections, connHpTop)
+
+    data.connections = connections
+
     updatePlayerColor(player)
 end
 
@@ -232,7 +278,8 @@ local function applyESP(player)
     end)
 
     ESP[player] = {
-        teamConn = teamConn
+        teamConn = teamConn,
+        connections = {}
     }
 
     checkFriendship(player)
@@ -258,6 +305,13 @@ RunService.RenderStepped:Connect(function()
     local pulseAlpha = (math.sin(tick() * 10) + 1) / 2 -- Плавное мигание
 
     for p, data in pairs(ESP) do
+        -- Проверка целостности объектов при микрофризе
+        if p.Character and p.Character.Parent then
+            if not data.gui or not data.gui.Parent or not data.hpGui or not data.hpGui.Parent or not data.hl or not data.hl.Parent then
+                setupCharacter(p, p.Character)
+            end
+        end
+
         if data.gui and data.root and data.root.Parent then
             local isPlayerFriend = Cache[p]
 
