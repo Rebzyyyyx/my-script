@@ -15,7 +15,12 @@ local Settings = {
 
     -- Настройки для остальных игроков
     HideOtherNames = false, -- Скрывать никнейм у обычных игроков
-    CustomOtherName = "[Игрок]" -- Текст вместо имени обычного игрока
+    CustomOtherName = "[Игрок]", -- Текст вместо имени обычного игрока
+
+    -- Настройки персонального Trail (только для LocalPlayer)
+    EnablePersonalTrail = true,
+    TrailTexture = "rbxassetid://373435404", -- Использована текстура Spark
+    TrailLifetime = 0.6 -- Длительность существования следа (в секундах)
 }
 
 local Players = game:GetService("Players")
@@ -64,6 +69,54 @@ local function checkFriendship(player)
     end)
 
     return Cache[player]
+end
+
+-- Создание индивидуального Trail для LocalPlayer
+local function setupPersonalTrail(char)
+    if not Settings.EnablePersonalTrail or not char then return end
+
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    if not root then return end
+
+    -- Удаляем старый Трейл, если он существовал
+    local oldTrail = char:FindFirstChild("PersonalTrail")
+    if oldTrail then oldTrail:Destroy() end
+
+    -- Создание Attachment в верхней и нижней части HumanoidRootPart
+    local att0 = Instance.new("Attachment")
+    att0.Name = "TrailAtt0"
+    att0.Position = Vector3.new(0, 1.5, 0)
+    att0.Parent = root
+
+    local att1 = Instance.new("Attachment")
+    att1.Name = "TrailAtt1"
+    att1.Position = Vector3.new(0, -1.5, 0)
+    att1.Parent = root
+
+    -- Создание Trail
+    local trail = Instance.new("Trail")
+    trail.Name = "PersonalTrail"
+    trail.Attachment0 = att0
+    trail.Attachment1 = att1
+    trail.Texture = Settings.TrailTexture
+    trail.Lifetime = Settings.TrailLifetime
+    trail.LightEmission = 0.8 -- Эффект свечения
+
+    -- Цветовой градиент: Фиолетовый -> Плавный переход в черный к 45% -> Черный до конца (100%)
+    trail.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(170, 0, 255)),   -- Ярко-фиолетовый в начале
+        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(0, 0, 0)),     -- Плавное превращение в полностью черный на 45%
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))        -- Черный в самом конце
+    })
+
+    -- Градиент прозрачности (Плавное затухание следа)
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.7, 0.3),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+
+    trail.Parent = char
 end
 
 -- Безопасное удаление объектов ESP для персонажа
@@ -291,6 +344,15 @@ local function applyESP(player)
     if player.Character then
         task.spawn(setupCharacter, player, player.Character)
     end
+end
+
+-- Инициализация Трейла при спавне / респавне локального игрока
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.spawn(setupPersonalTrail, char)
+end)
+
+if LocalPlayer.Character then
+    task.spawn(setupPersonalTrail, LocalPlayer.Character)
 end
 
 -- ==========================================
