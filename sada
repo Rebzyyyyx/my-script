@@ -1,68 +1,137 @@
--- Создание эмиттера фиолетово-черных частиц (45% фиолетовый / 55% черный) с физикой
-local function setupPersonalTrail(char)
-    if not Settings.EnablePersonalTrail or not char then return end
+-- ==========================================
+-- НАСТРОЙКИ ЧАСТИЦ (SPARK TRAIL SETTINGS)
+-- ==========================================
+local ParticleSettings = {
+    Enabled = true,                     -- Включить/выключить частицы
+    Target = "SelfOnly",                -- "SelfOnly" или "SelfAndFriends"
+    Texture = "rbxassetid://373435404", -- Текстура Spark
+    Rate = 50,                          -- Количество спавнящихся искр в секунду
+    Lifetime = 0.8,                     -- Время жизни каждой искры (сек)
+    Size = 0.6,                         -- Размер искр
+    Speed = 2.0,                        -- Физика: скорость разлета искр
+    SpreadAngle = Vector2.new(60, 60),  -- Угол разлета во все стороны
+    GravityForce = -2                   -- Сила падения/подъема частиц
+}
 
-    local root = char:WaitForChild("HumanoidRootPart", 10)
-    if not root then return end
+-- Градиент: 45% Яркий фиолетовый -> переходит в Насыщенный чёрный
+local PurpleColor = Color3.fromRGB(150, 0, 255)
+local BlackColor  = Color3.fromRGB(10, 10, 10)
 
-    -- Очистка прошлых элементов
-    local oldAttachment = root:FindFirstChild("PersonalTrailAttachment")
-    if oldAttachment then oldAttachment:Destroy() end
+local TrailColorSequence = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, PurpleColor),
+    ColorSequenceKeypoint.new(0.45, PurpleColor), -- 45% длины держится фиолетовый
+    ColorSequenceKeypoint.new(1, BlackColor)       -- Плавный переход в чёрный на оставшемся отрезке
+})
 
-    -- Создаем Attachment для стабильной привязки партиклов к физике персонажа
-    local attachment = Instance.new("Attachment")
-    attachment.Name = "PersonalTrailAttachment"
-    attachment.Parent = root
+-- ==========================================
+-- СИСТЕМА ФИЗИЧЕСКИХ ИСКР (SPARKS)
+-- ==========================================
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
 
-    -- Создание ParticleEmitter
+-- Создание эмиттера с физикой и градиентом
+local function createSparkEmitter(attachment)
     local emitter = Instance.new("ParticleEmitter")
-    emitter.Name = "PersonalParticleTrail"
-    emitter.Texture = Settings.TrailTexture
-    emitter.Rate = Settings.ParticleRate
-    emitter.Lifetime = NumberRange.new(Settings.TrailLifetime * 0.8, Settings.TrailLifetime)
+    emitter.Name = "RebzyyxSparkParticle"
+    emitter.Texture = ParticleSettings.Texture
+    emitter.Rate = ParticleSettings.Rate
+    emitter.Lifetime = NumberRange.new(ParticleSettings.Lifetime * 0.6, ParticleSettings.Lifetime)
     
-    -- Настройка физики разлета и падения
-    emitter.Speed = NumberRange.new(3, 6)               -- Начальная скорость вылета частиц
-    emitter.VelocitySpread = 45                          -- Угол разлета частиц во все стороны
-    emitter.Acceleration = Vector3.new(0, Settings.GravityForce, 0) -- Гравитация (падение вниз)
-    emitter.Drag = 1.5                                   -- Сопротивление воздуха (плавное замедление)
-    
-    -- Размеры частиц
+    -- Размеры частиц (плавное уменьшение)
     emitter.Size = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.2),
-        NumberSequenceKeypoint.new(0.2, 0.8),
-        NumberSequenceKeypoint.new(0.8, 0.5),
+        NumberSequenceKeypoint.new(0, ParticleSettings.Size),
+        NumberSequenceKeypoint.new(0.6, ParticleSettings.Size * 0.8),
         NumberSequenceKeypoint.new(1, 0)
     })
     
-    -- Вращение частиц в воздухе
-    emitter.RotSpeed = NumberRange.new(-180, 180)
-    emitter.Rotation = NumberRange.new(0, 360)
-
-    -- Настройки цвета: 45% Фиолетовый / 55% Чёрный
-    local purpleColor = Color3.fromRGB(150, 0, 255) -- Яркий фиолетовый
-    local blackColor  = Color3.fromRGB(10, 10, 10)   -- Насыщенный чёрный
-
-    emitter.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, purpleColor),
-        ColorSequenceKeypoint.new(0.45, purpleColor), -- 45% длины фиолетовый
-        ColorSequenceKeypoint.new(0.46, blackColor),  -- Резкий/плавный переход в чёрный
-        ColorSequenceKeypoint.new(1, blackColor)      -- Остальные 55% чёрный
-    })
-
+    -- Градиент цвета (Фиолетовый -> Чёрный)
+    emitter.Color = TrailColorSequence
+    
     -- Прозрачность
     emitter.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.1),
+        NumberSequenceKeypoint.new(0, 0),
         NumberSequenceKeypoint.new(0.7, 0.2),
         NumberSequenceKeypoint.new(1, 1)
     })
-
-    -- Свечение
-    emitter.LightEmission = 0.4
-    emitter.LightInfluence = 0.2
+    
+    -- Физика разлета и вращения искр
+    emitter.Speed = NumberRange.new(0.5, ParticleSettings.Speed)
+    emitter.SpreadAngle = ParticleSettings.SpreadAngle
+    emitter.VelocitySpread = 60
+    emitter.Acceleration = Vector3.new(0, ParticleSettings.GravityForce, 0)
+    emitter.Drag = 1.5
+    
+    emitter.Rotation = NumberRange.new(0, 360)
+    emitter.RotSpeed = NumberRange.new(-180, 180)
+    
+    -- Примечание: Для видимости черного цвета свечение немного снижено
+    emitter.LightEmission = 0.3 
+    emitter.Orientation = Enum.ParticleOrientation.FacingCamera
     
     emitter.Parent = attachment
     
-    -- Принудительный импульс при появлении, чтобы частицы спавнились сразу
+    -- Начальный всплеск при появлении
     emitter:Emit(15)
+    
+    return emitter
 end
+
+-- Привязка эмиттера к персонажу
+local function createParticlesForCharacter(char)
+    if not char then return end
+    
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    if not root then return end
+
+    -- Очистка старых аттачментов
+    local oldAttach = root:FindFirstChild("RebzyyxSparkAttach")
+    if oldAttach then 
+        oldAttach:Destroy() 
+    end
+
+    -- Создаем Attachment для стабильной физики
+    local attach = Instance.new("Attachment")
+    attach.Name = "RebzyyxSparkAttach"
+    attach.Position = Vector3.new(0, -0.8, 0)
+    attach.Parent = root
+
+    createSparkEmitter(attach)
+end
+
+-- Проверка прав доступа и отслеживание респавна
+local function handlePlayer(player)
+    if not ParticleSettings.Enabled then return end
+
+    local function checkAndApply(char)
+        if not char then return end
+        
+        local isSelf = (player == LocalPlayer)
+        local isFriend = false
+        
+        if not isSelf and LocalPlayer then
+            pcall(function()
+                isFriend = LocalPlayer:IsFriendsWith(player.UserId)
+            end)
+        end
+
+        if isSelf or (ParticleSettings.Target == "SelfAndFriends" and isFriend) then
+            createParticlesForCharacter(char)
+        end
+    end
+
+    if player.Character then
+        task.spawn(checkAndApply, player.Character)
+    end
+    
+    player.CharacterAdded:Connect(function(char)
+        task.wait(0.3)
+        checkAndApply(char)
+    end)
+end
+
+-- Инициализация для текущих и новых игроков
+for _, p in ipairs(Players:GetPlayers()) do
+    task.spawn(handlePlayer, p)
+end
+
+Players.PlayerAdded:Connect(handlePlayer)
