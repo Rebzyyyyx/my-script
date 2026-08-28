@@ -1,267 +1,524 @@
 -- ==========================================
--- ПОЛНЫЙ СКРИПТ: ESP + PARTICLE TRAIL SYSTEM
+-- НАСТРОЙКИ (SETTINGS)
 -- ==========================================
+local Settings = {
+    MaxDistance = 1800, -- Максимальная дистанция видимости ников (в студсах)
+    HealthBarDistance = 250, -- Максимальная дистанция видимости HP бара (в студсах)
 
--- 1. НАСТРОЙКИ ЧАСТИЦ (PARTICLES)
-local ParticleSettings = {
-    Enabled = true,                     -- Включить/выключить частицы
-    Target = "SelfAndFriends",          -- "SelfOnly" или "SelfAndFriends"
-    Texture = "rbxassetid://373435404", -- Текстура Spark
-    Rate = 75,                          -- Плотность спавна
-    Lifetime = 1.0,                     -- Время жизни искры (сек)
-    Size = 0.5,                         -- Размер искр
-    Speed = 3.0,                        -- Скорость разлета
-    SpreadAngle = Vector2.new(180, 180),-- Угол разлета во все стороны
-    GravityForce = -1.5,                -- Падение вниз
-    Drag = 0.8                          -- Сопротивление воздуха
+    -- Настройки уведомления
+    ShowNotification = true, -- Показывать уведомление при запуске скрипта
+
+    -- Настройки для друзей
+    RainbowFriends = true, -- Радужная подсветка модели (Highlight) для друзей
+    HideFriendsNames = true, -- Скрывать никнейм у друзей
+    CustomFriendName = "[Друг]", -- Текст вместо имени друга
+
+    -- Настройки для остальных игроков
+    HideOtherNames = false, -- Скрывать никнейм у обычных игроков
+    CustomOtherName = "[Игрок]", -- Текст вместо имени обычного игрока
+
+    -- Настройки персональных частиц (для LocalPlayer и друзей)
+    EnablePersonalTrail = true, -- Трейл для тебя
+    EnableFriendsTrail = true, -- Трейл для друзей
+    TrailTexture = "rbxassetid://13437295831", -- Текстура звездочки (50% деление по диагонали)
+    TrailLifetime = 1.2, -- Длительность жизни каждой звездочки (в секундах)
+    ParticleRate = 40, -- Количество звездочек в секунду
+    GravityForce = -12 -- Сила гравитации (насколько быстро звездочки падают)
 }
 
--- 2. НАСТРОЙКИ ESP И ТЕГОВ
-local ESPSettings = {
-    Enabled = true,
-    ShowNames = true,
-    ShowDistance = true,
-    ShowBoxes = true,
-    TeamColors = true,
-    RainbowOverlay = false,
-    FillTransparency = 0.5,
-    OutlineTransparency = 0
-}
-
--- ГРАДИЕНТ ЦВЕТА ЧАСТИЦ: Фиолетовый -> Черный
-local PurpleColor = Color3.fromRGB(150, 0, 255)
-local BlackColor  = Color3.fromRGB(0, 0, 0)
-
-local TrailColorSequence = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, PurpleColor),
-    ColorSequenceKeypoint.new(0.45, PurpleColor),
-    ColorSequenceKeypoint.new(1, BlackColor)
-})
-
--- СЕРВИСЫ
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local StarterGui = game:GetService("StarterGui")
+local LocalPlayer = Players.LocalPlayer
 
--- КЭШ ДЛЯ ДРУЗЕЙ
-local friendCache = {}
+local Cache = {} -- [Player] = boolean (IsFriend)
+local ESP = {}   -- [Player] = { root, hl, gui, lbl, hpGui, hpFill, hpGradient, lowHpLbl, humanoid, teamConn, connections }
 
-local function isUserFriend(player)
-    if player == LocalPlayer then return false end
-    if friendCache[player.UserId] ~= nil then
-        return friendCache[player.UserId]
-    end
-
-    local success, isFriend = pcall(function()
-        return LocalPlayer:IsFriendsWith(player.UserId)
+-- Отправка уведомления о запуске
+if Settings.ShowNotification then
+    task.spawn(function()
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "ESP by XXXSF_ENFP",
+                Text = "Script injected!",
+                Duration = 5
+            })
+        end)
     end)
-
-    if success then
-        friendCache[player.UserId] = isFriend
-        return isFriend
-    end
-
-    return false
 end
 
 -- ==========================================
--- МОДУЛЬ ESP (HIGHLIGHT & BILLBOARD)
+-- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 -- ==========================================
-local function createESP(player)
+
+-- Конвертация Color3 в HEX
+local function colorToHex(color)
+    return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+end
+
+-- Проверка статуса друга
+local function checkFriendship(player)
+    if Cache[player] ~= nil then
+        return Cache[player]
+    end
+
+    Cache[player] = false
+
+    task.spawn(function()
+        local ok, res = pcall(function()
+            return LocalPlayer:IsFriendsWith(player.UserId)
+        end)
+        Cache[player] = ok and res or false
+    end)
+
+    return Cache[player]
+end
+
+-- Создание эмиттера диагональных фиолетово-черных звездочек (для себя и друзей)
+local function setupTrailForCharacter(char)
+    if not char then return end
+
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    if not root then return end
+
+    -- Удаляем старые эмиттеры/трейлы, если они были
+    local oldEmitter = root:FindFirstChild("PersonalParticleTrail")
+    if oldEmitter then oldEmitter:Destroy() end
+    local oldTrail = char:FindFirstChild("PersonalTrail")
+    if oldTrail then oldTrail:Destroy() end
+
+    -- Создание ParticleEmitter
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "PersonalParticleTrail"
+    emitter.Texture = Settings.TrailTexture
+    emitter.Rate = Settings.ParticleRate
+    emitter.Lifetime = NumberRange.new(Settings.TrailLifetime * 0.8, Settings.TrailLifetime)
+    
+    -- Физика: движение и гравитация вниз
+    emitter.Speed = NumberRange.new(2, 4) -- Скорость вылета
+    emitter.VelocitySpread = 35 -- Угол разлета частиц
+    emitter.Acceleration = Vector3.new(0, Settings.GravityForce, 0) -- Ускорение падения вниз
+    emitter.Drag = 1.2 -- Сопротивление воздуха
+    
+    -- Плавное изменение размера звездочек
+    emitter.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.2, 0.7),
+        NumberSequenceKeypoint.new(0.7, 0.5),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    
+    -- Вращение звездочек в полете
+    emitter.RotSpeed = NumberRange.new(-120, 120)
+    emitter.Rotation = NumberRange.new(0, 360)
+
+    -- Эффекты освещения
+    emitter.LightEmission = 0.7
+    emitter.LightInfluence = 0.1
+
+    -- Цвет окрашивает белую половину текстуры звездочки в фиолетовый,
+    -- оставляя черную половину нетронутой (получается 50% покраска наискось)
+    local startColor = Color3.fromRGB(170, 0, 255) -- Ярко-фиолетовый
+    local endColor = Color3.fromRGB(70, 0, 120)    -- Темно-фиолетовый в конце жизни
+
+    emitter.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, startColor),
+        ColorSequenceKeypoint.new(1, endColor)
+    })
+
+    -- Плавный прозрачный запуск и исчезновение
+    emitter.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.15, 0.05),
+        NumberSequenceKeypoint.new(0.7, 0.3),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+
+    emitter.Parent = root
+end
+
+-- Безопасное удаление объектов ESP для персонажа
+local function cleanupCharESP(pData)
+    if not pData then return end
+    
+    if pData.connections then
+        for _, conn in ipairs(pData.connections) do
+            if conn and conn.Connected then
+                conn:Disconnect()
+            end
+        end
+    end
+    pData.connections = {}
+
+    if pData.hl then pData.hl:Destroy() end
+    if pData.gui then pData.gui:Destroy() end
+    if pData.hpGui then pData.hpGui:Destroy() end
+    
+    pData.hl = nil
+    pData.gui = nil
+    pData.lbl = nil 
+    pData.root = nil
+    pData.hpGui = nil
+    pData.hpFill = nil
+    pData.hpGradient = nil
+    pData.lowHpLbl = nil
+    pData.humanoid = nil
+end
+
+-- Полная очистка при выходе игрока
+local function cleanupPlayer(player)
+    if ESP[player] then
+        if ESP[player].teamConn then
+            ESP[player].teamConn:Disconnect()
+        end
+        cleanupCharESP(ESP[player])
+        ESP[player] = nil
+    end
+    Cache[player] = nil
+end
+
+-- Обновление цвета ESP
+local function updatePlayerColor(player)
+    local data = ESP[player]
+    if not data or not data.hl or not data.hl.Parent then return end
+
+    if not Cache[player] then
+        local teamColor = player.TeamColor and player.TeamColor.Color or Color3.new(1, 1, 1)
+        data.hl.FillColor = teamColor
+        data.hl.OutlineColor = teamColor
+    end
+end
+
+-- Создание ESP для персонажа
+local function setupCharacter(player, char)
     if player == LocalPlayer then return end
 
-    local function applyESP(char)
-        if not char then return end
-        local root = char:WaitForChild("HumanoidRootPart", 10)
-        local head = char:WaitForChild("Head", 10)
-        if not root or not head then return end
+    local data = ESP[player]
+    if not data then return end
 
-        -- Удаление старого ESP
-        if char:FindFirstChild("ESPHighlight") then char.ESPHighlight:Destroy() end
-        if head:FindFirstChild("ESPNameTag") then head.ESPNameTag:Destroy() end
+    cleanupCharESP(data)
 
-        if not ESPSettings.Enabled then return end
+    local head = char:WaitForChild("Head", 10)
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    if not head or not root or not humanoid then return end
 
-        -- Цвет команды / по умолчанию
-        local mainColor = Color3.fromRGB(255, 255, 255)
-        if ESPSettings.TeamColors and player.TeamColor then
-            mainColor = player.TeamColor.Color
+    -- Отключение стандартного ника и HP bar Roblox
+    humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+
+    -- Highlight
+    local hl = Instance.new("Highlight")
+    hl.Name = "ESP_HL"
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.Parent = char
+
+    -- BillboardGui для ника
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ESP_GUI"
+    gui.Size = UDim2.new(0, 200, 0, 50)
+    gui.StudsOffset = Vector3.new(0, 3.5, 0)
+    gui.AlwaysOnTop = true
+    gui.Enabled = false
+    gui.Parent = head
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.fromScale(1, 1)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.new(1, 1, 1)
+    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lbl.TextStrokeTransparency = 0
+    lbl.Font = Enum.Font.SourceSansBold
+    lbl.TextSize = 16
+    lbl.RichText = true
+    lbl.Parent = gui
+
+    -- BillboardGui для HP бара
+    local hpGui = Instance.new("BillboardGui")
+    hpGui.Name = "ESP_HP_GUI"
+    hpGui.Size = UDim2.new(0, 6, 0, 50)
+    hpGui.StudsOffset = Vector3.new(-2.2, 0, 0)
+    hpGui.AlwaysOnTop = true
+    hpGui.Enabled = false
+    hpGui.Parent = root
+
+    -- Фон HP бара
+    local hpBG = Instance.new("Frame")
+    hpBG.Size = UDim2.fromScale(1, 1)
+    hpBG.BackgroundColor3 = Color3.new(0, 0, 0)
+    hpBG.BorderSizePixel = 0
+    hpBG.ClipsDescendants = false
+    hpBG.Parent = hpGui
+
+    local bgCorner = Instance.new("UICorner")
+    bgCorner.CornerRadius = UDim.new(1, 0)
+    bgCorner.Parent = hpBG
+
+    -- Заполнение шкалы HP
+    local hpFill = Instance.new("Frame")
+    hpFill.Name = "Fill"
+    hpFill.AnchorPoint = Vector2.new(0, 1)
+    hpFill.Position = UDim2.fromScale(0, 1)
+    hpFill.Size = UDim2.fromScale(1, 1)
+    hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+    hpFill.BorderSizePixel = 0
+    hpFill.Parent = hpBG
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = hpFill
+
+    local hpGradient = Instance.new("UIGradient")
+    hpGradient.Rotation = 90
+    hpGradient.Enabled = false
+    hpGradient.Parent = hpFill
+
+    -- Текст LOW HP!
+    local lowHpLbl = Instance.new("TextLabel")
+    lowHpLbl.Name = "LowHpLabel"
+    lowHpLbl.Size = UDim2.new(0, 60, 0, 14)
+    lowHpLbl.Position = UDim2.new(1, 4, 0.5, -7)
+    lowHpLbl.BackgroundTransparency = 1
+    lowHpLbl.TextColor3 = Color3.fromRGB(255, 30, 30)
+    lowHpLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lowHpLbl.TextStrokeTransparency = 0
+    lowHpLbl.Font = Enum.Font.SourceSansBold
+    lowHpLbl.TextSize = 13
+    lowHpLbl.Text = "LOW HP!"
+    lowHpLbl.TextXAlignment = Enum.TextXAlignment.Left
+    lowHpLbl.Visible = false
+    lowHpLbl.Parent = hpBG
+
+    -- Сохранение ссылок
+    data.root = root
+    data.hl = hl
+    data.gui = gui
+    data.lbl = lbl
+    data.hpGui = hpGui
+    data.hpFill = hpFill
+    data.hpGradient = hpGradient
+    data.lowHpLbl = lowHpLbl
+    data.humanoid = humanoid
+
+    local connections = {}
+
+    local function watchDestroy(obj)
+        local conn = obj.AncestryChanged:Connect(function(_, parent)
+            if not parent and player.Character == char then
+                task.defer(function()
+                    if player.Character == char then
+                        setupCharacter(player, char)
+                    end
+                end)
+            end
+        end)
+        table.insert(connections, conn)
+    end
+
+    watchDestroy(gui)
+    watchDestroy(hpGui)
+    watchDestroy(hl)
+
+    local connGuiTop = gui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
+        if not gui.AlwaysOnTop then gui.AlwaysOnTop = true end
+    end)
+    local connHpTop = hpGui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
+        if not hpGui.AlwaysOnTop then hpGui.AlwaysOnTop = true end
+    end)
+    table.insert(connections, connGuiTop)
+    table.insert(connections, connHpTop)
+
+    data.connections = connections
+
+    updatePlayerColor(player)
+end
+
+-- Проверка и создание трейла для игрока
+local function handleTrail(player, char)
+    if not char then return end
+
+    if player == LocalPlayer then
+        if Settings.EnablePersonalTrail then
+            setupTrailForCharacter(char)
         end
-
-        -- 1. Highlight (Контур и Заливка)
-        if ESPSettings.ShowBoxes then
-            local highlight = Instance.new("Highlight")
-            highlight.Name = "ESPHighlight"
-            highlight.Adornee = char
-            highlight.FillColor = mainColor
-            highlight.OutlineColor = mainColor
-            highlight.FillTransparency = ESPSettings.FillTransparency
-            highlight.OutlineTransparency = ESPSettings.OutlineTransparency
-            highlight.Parent = char
-        end
-
-        -- 2. BillboardGui (Имя и Дистанция)
-        if ESPSettings.ShowNames or ESPSettings.ShowDistance then
-            local bb = Instance.new("BillboardGui")
-            bb.Name = "ESPNameTag"
-            bb.Adornee = head
-            bb.Size = UDim2.new(0, 200, 0, 50)
-            bb.StudsOffset = Vector3.new(0, 2.5, 0)
-            bb.AlwaysOnTop = true
-
-            local txt = Instance.new("TextLabel")
-            txt.Size = UDim2.new(1, 0, 1, 0)
-            txt.BackgroundTransparency = 1
-            txt.TextColor3 = mainColor
-            txt.TextStrokeTransparency = 0
-            txt.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            txt.Font = Enum.Font.SourceSansBold
-            txt.TextSize = 14
-            txt.Parent = bb
-
-            bb.Parent = head
-
-            -- Обновление дистанции в реальном времени
-            local connection
-            connection = RunService.RenderStepped:Connect(function()
-                if not char or not char:Parent() or not head:Parent() or not txt:Parent() then
-                    connection:Disconnect()
-                    return
+    else
+        if Settings.EnableFriendsTrail then
+            task.spawn(function()
+                local isFriend = checkFriendship(player)
+                -- Дополнительное ожидание обновления кэша при первом вызове
+                if not isFriend and Cache[player] == nil then
+                    task.wait(0.5)
+                    isFriend = Cache[player] or false
                 end
 
-                local myChar = LocalPlayer.Character
-                local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-                local textStr = player.DisplayName or player.Name
-                if ESPSettings.ShowDistance and myRoot then
-                    local dist = math.floor((root.Position - myRoot.Position).Magnitude)
-                    textStr = string.format("%s [%d studs]", textStr, dist)
-                end
-
-                txt.Text = textStr
-
-                -- Радужный режим (если включен)
-                if ESPSettings.RainbowOverlay then
-                    local hue = (tick() % 5) / 5
-                    local rainbowColor = Color3.fromHSV(hue, 1, 1)
-                    txt.TextColor3 = rainbowColor
-                    local hl = char:FindFirstChild("ESPHighlight")
-                    if hl then hl.FillColor = rainbowColor end
+                if isFriend then
+                    setupTrailForCharacter(char)
                 end
             end)
         end
     end
+end
+
+-- Инициализация игрока
+local function applyESP(player)
+    if player == LocalPlayer then
+        if player.Character then
+            task.spawn(handleTrail, player, player.Character)
+        end
+        player.CharacterAdded:Connect(function(char)
+            task.spawn(handleTrail, player, char)
+        end)
+        return
+    end
+
+    local teamConn = player:GetPropertyChangedSignal("TeamColor"):Connect(function()
+        updatePlayerColor(player)
+    end)
+
+    ESP[player] = {
+        teamConn = teamConn,
+        connections = {}
+    }
+
+    checkFriendship(player)
+
+    player.CharacterAdded:Connect(function(char)
+        setupCharacter(player, char)
+        task.spawn(handleTrail, player, char)
+    end)
 
     if player.Character then
-        task.spawn(applyESP, player.Character)
+        task.spawn(setupCharacter, player, player.Character)
+        task.spawn(handleTrail, player, player.Character)
     end
-    player.CharacterAdded:Connect(function(char)
-        task.wait(0.5)
-        applyESP(char)
-    end)
 end
 
 -- ==========================================
--- МОДУЛЬ ЧАСТИЦ (SPARK EMITTER)
+-- ОСНОВНОЙ ЦИКЛ И ИНИЦИАЛИЗАЦИЯ
 -- ==========================================
-local function createSparkEmitter(attachment)
-    local emitter = Instance.new("ParticleEmitter")
-    emitter.Name = "VioletBlackParticle"
-    emitter.Texture = ParticleSettings.Texture
-    emitter.Rate = ParticleSettings.Rate
-    emitter.Lifetime = NumberRange.new(ParticleSettings.Lifetime * 0.8, ParticleSettings.Lifetime)
-    
-    emitter.Size = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, ParticleSettings.Size),
-        NumberSequenceKeypoint.new(1, 0)
-    })
-    
-    emitter.Color = TrailColorSequence
-    
-    emitter.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0),
-        NumberSequenceKeypoint.new(0.8, 0.2),
-        NumberSequenceKeypoint.new(1, 1)
-    })
-    
-    emitter.LightEmission = 0
-    emitter.LightInfluence = 0.5
-    
-    emitter.Speed = NumberRange.new(0, ParticleSettings.Speed)
-    emitter.SpreadAngle = ParticleSettings.SpreadAngle
-    emitter.VelocitySpread = 180
-    emitter.Acceleration = Vector3.new(0, ParticleSettings.GravityForce, 0)
-    emitter.Drag = ParticleSettings.Drag
-    
-    emitter.Rotation = NumberRange.new(-180, 180)
-    emitter.RotSpeed = NumberRange.new(-360, 360)
-    emitter.Orientation = Enum.ParticleOrientation.FacingCamera
-    
-    emitter.Parent = attachment
-    emitter:Emit(15)
-    
-    return emitter
-end
 
-local function createParticlesForCharacter(char)
-    if not char then return end
-    
-    local root = char:WaitForChild("HumanoidRootPart", 10)
-    if not root then return end
+RunService.RenderStepped:Connect(function()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 
-    local oldAttach = root:FindFirstChild("TrailParticleAttach")
-    if oldAttach then 
-        oldAttach:Destroy() 
-    end
+    local rainbow = Color3.fromHSV((tick() % 3) / 3, 1, 1)
+    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2
 
-    local attach = Instance.new("Attachment")
-    attach.Name = "TrailParticleAttach"
-    attach.Position = Vector3.new(0, -0.2, 0)
-    attach.Parent = root
-
-    createSparkEmitter(attach)
-end
-
-local function handleParticles(player)
-    if not ParticleSettings.Enabled then return end
-
-    local function checkAndApply(char)
-        if not char then return end
-        
-        local isSelf = (player == LocalPlayer)
-        local isFriend = false
-        
-        if not isSelf and ParticleSettings.Target == "SelfAndFriends" then
-            isFriend = isUserFriend(player)
+    for p, data in pairs(ESP) do
+        if p.Character and p.Character.Parent then
+            if not data.gui or not data.gui.Parent or not data.hpGui or not data.hpGui.Parent or not data.hl or not data.hl.Parent then
+                setupCharacter(p, p.Character)
+            end
         end
 
-        if isSelf or isFriend then
-            createParticlesForCharacter(char)
+        if data.gui and data.root and data.root.Parent then
+            local isPlayerFriend = Cache[p]
+
+            if Settings.RainbowFriends and isPlayerFriend and data.hl then
+                data.hl.FillColor = rainbow
+                data.hl.OutlineColor = rainbow
+            end
+
+            if myRoot then
+                local dist = (myRoot.Position - data.root.Position).Magnitude
+                
+                if dist <= Settings.MaxDistance then
+                    local displayName = p.DisplayName
+
+                    if isPlayerFriend then
+                        if Settings.HideFriendsNames then
+                            displayName = Settings.CustomFriendName
+                        end
+                    else
+                        if Settings.HideOtherNames then
+                            displayName = Settings.CustomOtherName
+                        end
+                    end
+
+                    local teamColor = p.TeamColor and p.TeamColor.Color or Color3.new(1, 1, 1)
+                    local nameColorHex = colorToHex(teamColor)
+
+                    data.lbl.Text = string.format("<font color=\"%s\">%s</font>\n[%d studs]", nameColorHex, displayName, math.floor(dist))
+                    data.gui.Enabled = true
+                else
+                    data.gui.Enabled = false
+                end
+
+                if dist <= Settings.HealthBarDistance and data.hpGui and data.humanoid then
+                    local health = math.clamp(data.humanoid.Health, 0, data.humanoid.MaxHealth)
+                    local maxHealth = math.max(data.humanoid.MaxHealth, 1)
+                    local hpPercent = health / maxHealth
+
+                    data.hpFill.Size = UDim2.fromScale(1, hpPercent)
+
+                    local darkRed = Color3.fromRGB(150, 0, 0)
+                    local brightRed = Color3.fromRGB(255, 30, 30)
+
+                    if isPlayerFriend then
+                        if hpPercent > 0.25 then
+                            data.hpGradient.Enabled = true
+                            data.hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+                            data.hpFill.BackgroundTransparency = (1 - hpPercent) * 0.35
+                            
+                            local sat = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+                            local val = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+
+                            data.hpGradient.Color = ColorSequence.new({
+                                ColorSequenceKeypoint.new(0, Color3.fromHSV(0, sat, val)),
+                                ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.33, sat, val)),
+                                ColorSequenceKeypoint.new(1, Color3.fromHSV(0.66, sat, val))
+                            })
+                            
+                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
+                        else
+                            data.hpGradient.Enabled = false
+                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
+
+                            if data.lowHpLbl then
+                                data.lowHpLbl.Visible = true
+                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
+                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
+                            end
+                        end
+                    else
+                        data.hpGradient.Enabled = false
+
+                        if hpPercent <= 0.25 then
+                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
+
+                            if data.lowHpLbl then
+                                data.lowHpLbl.Visible = true
+                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
+                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
+                            end
+                        else
+                            local baseColor = Color3.fromHSV(hpPercent * 0.3, 1, 1)
+                            data.hpFill.BackgroundColor3 = baseColor
+                            data.hpFill.BackgroundTransparency = 0
+
+                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
+                        end
+                    end
+
+                    data.hpGui.Enabled = true
+                elseif data.hpGui then
+                    data.hpGui.Enabled = false
+                end
+            else
+                data.gui.Enabled = false
+                if data.hpGui then data.hpGui.Enabled = false end
+            end
         end
     end
-
-    if player.Character then
-        task.spawn(checkAndApply, player.Character)
-    end
-    
-    player.CharacterAdded:Connect(function(char)
-        task.wait(0.5)
-        checkAndApply(char)
-    end)
-end
-
--- ==========================================
--- ИНИЦИАЛИЗАЦИЯ
--- ==========================================
-local function setupPlayer(player)
-    createESP(player)
-    handleParticles(player)
-end
+end)
 
 for _, p in ipairs(Players:GetPlayers()) do
-    task.spawn(setupPlayer, p)
+    applyESP(p)
 end
 
-Players.PlayerAdded:Connect(function(p)
-    task.spawn(setupPlayer, p)
-end)
+Players.PlayerAdded:Connect(applyESP)
+Players.PlayerRemoving:Connect(cleanupPlayer)
