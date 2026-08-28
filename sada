@@ -17,10 +17,12 @@ local Settings = {
     HideOtherNames = false, -- Скрывать никнейм у обычных игроков
     CustomOtherName = "[Игрок]", -- Текст вместо имени обычного игрока
 
-    -- Настройки персонального Trail (только для LocalPlayer)
+    -- Настройки персональных частиц (только для LocalPlayer)
     EnablePersonalTrail = true,
-    TrailTexture = "rbxassetid://373435404", -- Использована текстура Spark
-    TrailLifetime = 0.6 -- Длительность существования следа (в секундах)
+    TrailTexture = "rbxassetid://13437295831", -- Текстура звездочки (50% деление по диагонали)
+    TrailLifetime = 1.2, -- Длительность жизни каждой звездочки (в секундах)
+    ParticleRate = 40, -- Количество звездочек в секунду
+    GravityForce = -12 -- Сила гравитации (насколько быстро звездочки падают)
 }
 
 local Players = game:GetService("Players")
@@ -71,52 +73,67 @@ local function checkFriendship(player)
     return Cache[player]
 end
 
--- Создание индивидуального Trail для LocalPlayer
+-- Создание эмиттера диагональных фиолетово-черных звездочек
 local function setupPersonalTrail(char)
     if not Settings.EnablePersonalTrail or not char then return end
 
     local root = char:WaitForChild("HumanoidRootPart", 10)
     if not root then return end
 
-    -- Удаляем старый Трейл, если он существовал
+    -- Удаляем старые эмиттеры/трейлы, если они были
+    local oldEmitter = root:FindFirstChild("PersonalParticleTrail")
+    if oldEmitter then oldEmitter:Destroy() end
     local oldTrail = char:FindFirstChild("PersonalTrail")
     if oldTrail then oldTrail:Destroy() end
 
-    -- Создание Attachment в верхней и нижней части HumanoidRootPart
-    local att0 = Instance.new("Attachment")
-    att0.Name = "TrailAtt0"
-    att0.Position = Vector3.new(0, 1.5, 0)
-    att0.Parent = root
+    -- Создание ParticleEmitter
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "PersonalParticleTrail"
+    emitter.Texture = Settings.TrailTexture
+    emitter.Rate = Settings.ParticleRate
+    emitter.Lifetime = NumberRange.new(Settings.TrailLifetime * 0.8, Settings.TrailLifetime)
+    
+    -- Физика: движение и гравитация вниз
+    emitter.Speed = NumberRange.new(2, 4) -- Скорость вылета
+    emitter.VelocitySpread = 35 -- Угол разлета частиц
+    emitter.Acceleration = Vector3.new(0, Settings.GravityForce, 0) -- Ускорение падения вниз
+    emitter.Drag = 1.2 -- Сопротивление воздуха
+    
+    -- Плавное изменение размера звездочек
+    emitter.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.2, 0.7),
+        NumberSequenceKeypoint.new(0.7, 0.5),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    
+    -- Вращение звездочек в полете
+    emitter.RotSpeed = NumberRange.new(-120, 120)
+    emitter.Rotation = NumberRange.new(0, 360)
 
-    local att1 = Instance.new("Attachment")
-    att1.Name = "TrailAtt1"
-    att1.Position = Vector3.new(0, -1.5, 0)
-    att1.Parent = root
+    -- Эффекты освещения
+    emitter.LightEmission = 0.7
+    emitter.LightInfluence = 0.1
 
-    -- Создание Trail
-    local trail = Instance.new("Trail")
-    trail.Name = "PersonalTrail"
-    trail.Attachment0 = att0
-    trail.Attachment1 = att1
-    trail.Texture = Settings.TrailTexture
-    trail.Lifetime = Settings.TrailLifetime
-    trail.LightEmission = 0.8 -- Эффект свечения
+    -- Цвет окрашивает белую половину текстуры звездочки в фиолетовый,
+    -- оставляя черную половину нетронутой (получается 50% покраска наискось)
+    local startColor = Color3.fromRGB(170, 0, 255) -- Ярко-фиолетовый
+    local endColor = Color3.fromRGB(70, 0, 120)    -- Темно-фиолетовый в конце жизни
 
-    -- Цветовой градиент: Фиолетовый -> Плавный переход в черный к 45% -> Черный до конца (100%)
-    trail.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(170, 0, 255)),   -- Ярко-фиолетовый в начале
-        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(0, 0, 0)),     -- Плавное превращение в полностью черный на 45%
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))        -- Черный в самом конце
+    emitter.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, startColor),
+        ColorSequenceKeypoint.new(1, endColor)
     })
 
-    -- Градиент прозрачности (Плавное затухание следа)
-    trail.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0),
+    -- Плавный прозрачный запуск и исчезновение
+    emitter.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.15, 0.05),
         NumberSequenceKeypoint.new(0.7, 0.3),
         NumberSequenceKeypoint.new(1, 1)
     })
 
-    trail.Parent = char
+    emitter.Parent = root
 end
 
 -- Безопасное удаление объектов ESP для персонажа
@@ -159,7 +176,7 @@ local function cleanupPlayer(player)
     Cache[player] = nil
 end
 
--- Обновление цвета ESP (по команде)
+-- Обновление цвета ESP
 local function updatePlayerColor(player)
     local data = ESP[player]
     if not data or not data.hl or not data.hl.Parent then return end
@@ -257,7 +274,7 @@ local function setupCharacter(player, char)
     hpGradient.Enabled = false
     hpGradient.Parent = hpFill
 
-    -- Текст LOW HP! (вдоль полосы здоровья)
+    -- Текст LOW HP!
     local lowHpLbl = Instance.new("TextLabel")
     lowHpLbl.Name = "LowHpLabel"
     lowHpLbl.Size = UDim2.new(0, 60, 0, 14)
@@ -284,12 +301,8 @@ local function setupCharacter(player, char)
     data.lowHpLbl = lowHpLbl
     data.humanoid = humanoid
 
-    -- ==========================================
-    -- СИСТЕМА ЗАЩИТЫ ОТ МИКРОФРИЗОВ И LOW PERF
-    -- ==========================================
     local connections = {}
 
-    -- Авто-восстановление при удалении (Destroy) объектов оптимизатором
     local function watchDestroy(obj)
         local conn = obj.AncestryChanged:Connect(function(_, parent)
             if not parent and player.Character == char then
@@ -307,7 +320,6 @@ local function setupCharacter(player, char)
     watchDestroy(hpGui)
     watchDestroy(hl)
 
-    -- Принудительное удержание AlwaysOnTop
     local connGuiTop = gui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
         if not gui.AlwaysOnTop then gui.AlwaysOnTop = true end
     end)
@@ -346,7 +358,7 @@ local function applyESP(player)
     end
 end
 
--- Инициализация Трейла при спавне / респавне локального игрока
+-- Инициализация частичек при спавне / респавне локального игрока
 LocalPlayer.CharacterAdded:Connect(function(char)
     task.spawn(setupPersonalTrail, char)
 end)
@@ -364,10 +376,9 @@ RunService.RenderStepped:Connect(function()
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 
     local rainbow = Color3.fromHSV((tick() % 3) / 3, 1, 1)
-    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2 -- Плавное мигание
+    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2
 
     for p, data in pairs(ESP) do
-        -- Проверка целостности объектов при микрофризе
         if p.Character and p.Character.Parent then
             if not data.gui or not data.gui.Parent or not data.hpGui or not data.hpGui.Parent or not data.hl or not data.hl.Parent then
                 setupCharacter(p, p.Character)
@@ -377,13 +388,11 @@ RunService.RenderStepped:Connect(function()
         if data.gui and data.root and data.root.Parent then
             local isPlayerFriend = Cache[p]
 
-            -- Радужный Highlight для друзей
             if Settings.RainbowFriends and isPlayerFriend and data.hl then
                 data.hl.FillColor = rainbow
                 data.hl.OutlineColor = rainbow
             end
 
-            -- Отображение никнеймов и расстояния
             if myRoot then
                 local dist = (myRoot.Position - data.root.Position).Magnitude
                 
@@ -409,7 +418,6 @@ RunService.RenderStepped:Connect(function()
                     data.gui.Enabled = false
                 end
 
-                -- Отображение HP бара
                 if dist <= Settings.HealthBarDistance and data.hpGui and data.humanoid then
                     local health = math.clamp(data.humanoid.Health, 0, data.humanoid.MaxHealth)
                     local maxHealth = math.max(data.humanoid.MaxHealth, 1)
@@ -437,7 +445,6 @@ RunService.RenderStepped:Connect(function()
                             
                             if data.lowHpLbl then data.lowHpLbl.Visible = false end
                         else
-                            -- HP <= 25%: Краснеет и пульсирует
                             data.hpGradient.Enabled = false
                             data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
                             data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
@@ -449,7 +456,6 @@ RunService.RenderStepped:Connect(function()
                             end
                         end
                     else
-                        -- Обычные игроки
                         data.hpGradient.Enabled = false
 
                         if hpPercent <= 0.25 then
@@ -482,7 +488,6 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Инициализация существующих и новых игроков
 for _, p in ipairs(Players:GetPlayers()) do
     applyESP(p)
 end
