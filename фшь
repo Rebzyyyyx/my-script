@@ -1,0 +1,778 @@
+-- ==========================================
+-- НАСТРОЙКИ (SETTINGS)
+-- ==========================================
+local Settings = {
+    MaxDistance = 1800,
+    HealthBarDistance = 250,
+
+    ShowNotification = true,
+
+    -- Настройки для друзей
+    RainbowFriends = true, -- Поставьте false, чтобы друзья тоже подсвечивались цветом своей команды
+    HideFriendsNames = true,
+    CustomFriendName = "[Друг]",
+
+    -- Настройки для остальных игроков
+    HideOtherNames = false,
+    CustomOtherName = "[Игрок]",
+
+    -- Настройки Aimbot
+    AimbotEnabled = true,
+    AimKey = Enum.UserInputType.MouseButton2,
+    AimPart = "Head", -- "Head" или "HumanoidRootPart"
+    Smoothness = 0.8,
+    TeamCheck = false,
+    MaxAimDistance = 300,
+
+    -- Настройки FOV
+    ShowFOV = true,
+    FOVRadius = 50,
+    FOVColorTarget = Color3.fromRGB(0, 255, 0),
+    FOVColorNoTarget = Color3.fromRGB(255, 0, 0)
+}
+
+-- НАСТРОЙКИ ИСКР (SPARK TRAIL)
+local ParticleSettings = {
+    Enabled = true,
+    Target = "SelfAndFriends", -- "SelfOnly" или "SelfAndFriends"
+    Texture = "rbxassetid://373435404",
+    Rate = 50,
+    Lifetime = 0.8,
+    Size = 0.6,
+    Speed = 2.0,
+    SpreadAngle = Vector2.new(60, 60)
+}
+
+local PurpleColor = Color3.fromRGB(170, 0, 255)
+local BlackColor = Color3.fromRGB(5, 5, 5)
+
+local TrailColorSequence = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, PurpleColor),
+    ColorSequenceKeypoint.new(0.4, PurpleColor),
+    ColorSequenceKeypoint.new(1, BlackColor)
+})
+
+-- ==========================================
+-- СЕРВИСЫ И ИНИЦИАЛИЗАЦИЯ
+-- ==========================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local Cache = {}
+local ESP = {}
+local IsAiming = false
+local IsRobloxMenuOpen = false
+
+local function getCenterScreenLocation()
+    return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+end
+
+-- ==========================================
+-- FOV CIRCLE
+-- ==========================================
+local FOVCircle
+local hasDrawing = pcall(function()
+    FOVCircle = Drawing.new("Circle")
+end)
+
+if hasDrawing and FOVCircle then
+    FOVCircle.Thickness = 1.5
+    FOVCircle.NumSides = 60
+    FOVCircle.Filled = false
+    FOVCircle.Transparency = 1
+    FOVCircle.Visible = Settings.ShowFOV
+    FOVCircle.Radius = Settings.FOVRadius
+    FOVCircle.Color = Settings.FOVColorNoTarget
+end
+
+GuiService.MenuOpened:Connect(function()
+    IsRobloxMenuOpen = true
+    IsAiming = false
+    if FOVCircle then FOVCircle.Visible = false end
+end)
+
+GuiService.MenuClosed:Connect(function()
+    IsRobloxMenuOpen = false
+end)
+
+UserInputService.WindowFocusReleased:Connect(function()
+    IsAiming = false
+    if FOVCircle then FOVCircle.Visible = false end
+end)
+
+if Settings.ShowNotification then
+    task.spawn(function()
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "ESP & Aimbot Script",
+                Text = "Script injected successfully!",
+                Duration = 4
+            })
+        end)
+    end)
+end
+
+-- ==========================================
+-- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ДРУЖБА
+-- ==========================================
+local function colorToHex(color)
+    return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+end
+
+local function getPlayerTeamColor(player)
+    if player.TeamColor then
+        return player.TeamColor.Color
+    end
+    return Color3.fromRGB(255, 255, 255)
+end
+
+local createParticlesForCharacter -- Прототип
+
+local function checkFriendship(player)
+    if Cache[player] ~= nil then return Cache[player] end
+    Cache[player] = false
+    task.spawn(function()
+        local ok, res = pcall(function()
+            return LocalPlayer:IsFriendsWith(player.UserId)
+        end)
+        Cache[player] = ok and res or false
+        if Cache[player] and player.Character then
+            task.spawn(createParticlesForCharacter, player.Character)
+        end
+    end)
+    return Cache[player]
+end
+
+-- ==========================================
+-- СИСТЕМА ИСКР (SPARK TRAIL)
+-- ==========================================
+local function createSparkEmitter(attachment)
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "RebzyyxSparkParticle"
+    emitter.Texture = ParticleSettings.Texture
+    emitter.Rate = ParticleSettings.Rate
+    emitter.Lifetime = NumberRange.new(ParticleSettings.Lifetime * 0.6, ParticleSettings.Lifetime)
+    
+    emitter.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, ParticleSettings.Size),
+        NumberSequenceKeypoint.new(0.6, ParticleSettings.Size * 0.8),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    
+    emitter.Color = TrailColorSequence
+    
+    emitter.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.6, 0.2),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+    
+    emitter.Speed = NumberRange.new(0.5, ParticleSettings.Speed)
+    emitter.SpreadAngle = ParticleSettings.SpreadAngle
+    emitter.VelocitySpread = 60
+    emitter.Rotation = NumberRange.new(0, 360)
+    emitter.RotSpeed = NumberRange.new(-180, 180)
+    
+    emitter.LightEmission = 0.4
+    emitter.Orientation = Enum.ParticleOrientation.FacingCamera
+    emitter.Parent = attachment
+    return emitter
+end
+
+createParticlesForCharacter = function(char)
+    if not char or not ParticleSettings.Enabled then return end
+    
+    local root = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart", 5)
+    if not root then return end
+
+    local oldAttach = root:FindFirstChild("RebzyyxSparkAttach")
+    if oldAttach then oldAttach:Destroy() end
+
+    local attach = Instance.new("Attachment")
+    attach.Name = "RebzyyxSparkAttach"
+    attach.Position = Vector3.new(0, -0.8, 0)
+    attach.Parent = root
+
+    createSparkEmitter(attach)
+end
+
+local function handleTrailForPlayer(player, char)
+    if not ParticleSettings.Enabled or not char then return end
+
+    if player == LocalPlayer then
+        task.spawn(createParticlesForCharacter, char)
+    elseif ParticleSettings.Target == "SelfAndFriends" then
+        if Cache[player] then
+            task.spawn(createParticlesForCharacter, char)
+        else
+            checkFriendship(player)
+        end
+    end
+end
+
+-- ==========================================
+-- ЛОГИКА AIMBOT & ESP
+-- ==========================================
+local function getTargetPart(char)
+    if not char then return nil end
+    if Settings.AimPart == "Head" then
+        return char:FindFirstChild("Head")
+    else
+        return char:FindFirstChild("HumanoidRootPart") 
+            or char:FindFirstChild("Torso") 
+            or char:FindFirstChild("UpperTorso")
+    end
+end
+
+local function isTeammate(player)
+    if not Settings.TeamCheck then return false end
+    if LocalPlayer.Team and player.Team then
+        return LocalPlayer.Team == player.Team
+    end
+    if LocalPlayer.TeamColor and player.TeamColor then
+        return LocalPlayer.TeamColor == player.TeamColor
+    end
+    return false
+end
+
+local function getClosestPlayer()
+    local closestPart = nil
+    local shortestDistance = Settings.FOVRadius
+    local centerScreenPos = getCenterScreenLocation()
+    
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local targetPart = getTargetPart(char)
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+            if targetPart and humanoid and humanoid.Health > 0 then
+                if isTeammate(player) then continue end
+
+                if myRoot then
+                    local worldDist = (myRoot.Position - targetPart.Position).Magnitude
+                    if worldDist > Settings.MaxAimDistance then continue end
+                end
+
+                local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                if onScreen and screenPos.Z > 0 then
+                    local target2D = Vector2.new(screenPos.X, screenPos.Y)
+                    local distToCenter = (target2D - centerScreenPos).Magnitude
+
+                    if distToCenter <= shortestDistance then
+                        shortestDistance = distToCenter
+                        closestPart = targetPart
+                    end
+                end
+            end
+        end
+    end
+    return closestPart
+end
+
+local function cleanupCharESP(pData)
+    if not pData then return end
+    if pData.connections then
+        for _, conn in ipairs(pData.connections) do
+            if conn and conn.Connected then conn:Disconnect() end
+        end
+    end
+    pData.connections = {}
+
+    if pData.hl then pData.hl:Destroy() end
+    if pData.gui then pData.gui:Destroy() end
+    if pData.hpGui then pData.hpGui:Destroy() end
+    
+    pData.hl, pData.gui, pData.lbl, pData.root = nil, nil, nil, nil
+    pData.hpGui, pData.hpFill, pData.hpGradient, pData.lowHpLbl = nil, nil, nil, nil
+    pData.hpStroke, pData.humanoid = nil, nil
+    pData.isDying = false
+end
+
+local function cleanupPlayer(player)
+    if ESP[player] then
+        if ESP[player].teamConn then ESP[player].teamConn:Disconnect() end
+        cleanupCharESP(ESP[player])
+        ESP[player] = nil
+    end
+    Cache[player] = nil
+end
+
+local function setupCharacter(player, char)
+    local data = ESP[player]
+    if not data then return end
+
+    cleanupCharESP(data)
+
+    handleTrailForPlayer(player, char)
+
+    if player == LocalPlayer then return end
+
+    local head = char:WaitForChild("Head", 5)
+    local root = char:WaitForChild("HumanoidRootPart", 5) or char:WaitForChild("Torso", 5)
+    local humanoid = char:WaitForChild("Humanoid", 5)
+    if not head or not root or not humanoid then return end
+
+    humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+
+    local teamColor = getPlayerTeamColor(player)
+
+    local hl = Instance.new("Highlight")
+    hl.Name = "ESP_HL"
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillColor = teamColor
+    hl.OutlineColor = teamColor
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.Parent = char
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ESP_GUI"
+    gui.Size = UDim2.new(0, 200, 0, 50)
+    gui.StudsOffset = Vector3.new(0, 3.5, 0)
+    gui.AlwaysOnTop = true
+    gui.Enabled = false
+    gui.Parent = head
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.fromScale(1, 1)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.new(1, 1, 1)
+    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lbl.TextStrokeTransparency = 0
+    lbl.Font = Enum.Font.SourceSansBold
+    lbl.TextSize = 16
+    lbl.RichText = true
+    lbl.Parent = gui
+
+    local hpGui = Instance.new("BillboardGui")
+    hpGui.Name = "ESP_HP_GUI"
+    hpGui.Size = UDim2.new(0, 120, 0, 50)
+    hpGui.StudsOffset = Vector3.new(-2.2, 0, 0)
+    hpGui.AlwaysOnTop = true
+    hpGui.Enabled = false
+    hpGui.Parent = root
+
+    local hpBG = Instance.new("Frame")
+    hpBG.Name = "HP_Background"
+    hpBG.Size = UDim2.new(0, 8, 1, 0)
+    hpBG.BackgroundColor3 = Color3.new(0, 0, 0)
+    hpBG.BorderSizePixel = 0
+    hpBG.Parent = hpGui
+
+    Instance.new("UICorner", hpBG).CornerRadius = UDim.new(1, 0)
+
+    local hpStroke = Instance.new("UIStroke")
+    hpStroke.Thickness = 2
+    hpStroke.Color = Color3.fromRGB(255, 255, 255)
+    hpStroke.Enabled = false
+    hpStroke.Parent = hpBG
+
+    local hpFill = Instance.new("Frame")
+    hpFill.Name = "Fill"
+    hpFill.AnchorPoint = Vector2.new(0, 1)
+    hpFill.Position = UDim2.fromScale(0, 1)
+    hpFill.Size = UDim2.fromScale(1, 1)
+    hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+    hpFill.BorderSizePixel = 0
+    hpFill.Parent = hpBG
+
+    Instance.new("UICorner", hpFill).CornerRadius = UDim.new(1, 0)
+
+    local hpGradient = Instance.new("UIGradient")
+    hpGradient.Rotation = 90
+    hpGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+        ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 127, 0)),
+        ColorSequenceKeypoint.new(0.4, Color3.fromRGB(255, 255, 0)),
+        ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0, 255, 0)),
+        ColorSequenceKeypoint.new(0.8, Color3.fromRGB(0, 0, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(139, 0, 255))
+    })
+    hpGradient.Enabled = false
+    hpGradient.Parent = hpFill
+
+    local lowHpLbl = Instance.new("TextLabel")
+    lowHpLbl.Name = "LowHpLabel"
+    lowHpLbl.Size = UDim2.new(0, 100, 0, 20)
+    lowHpLbl.Position = UDim2.new(1, 6, 0.5, -10)
+    lowHpLbl.BackgroundTransparency = 1
+    lowHpLbl.TextColor3 = Color3.fromRGB(255, 0, 0)
+    lowHpLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lowHpLbl.TextStrokeTransparency = 0
+    lowHpLbl.Font = Enum.Font.GothamBold
+    lowHpLbl.TextSize = 14
+    lowHpLbl.Text = "LOW HP!"
+    lowHpLbl.TextXAlignment = Enum.TextXAlignment.Left
+    lowHpLbl.Visible = false
+    lowHpLbl.Parent = hpBG
+
+    data.root = root; data.hl = hl; data.gui = gui; data.lbl = lbl
+    data.hpGui = hpGui; data.hpFill = hpFill; data.hpGradient = hpGradient
+    data.lowHpLbl = lowHpLbl; data.hpStroke = hpStroke; data.humanoid = humanoid
+    data.isDying = false
+
+    local diedConn = humanoid.Died:Connect(function()
+        data.isDying = true
+        if data.lowHpLbl then
+            data.lowHpLbl.Text = "DEATH!"
+            data.lowHpLbl.TextColor3 = Color3.fromRGB(150, 0, 0)
+            data.lowHpLbl.Visible = true
+        end
+    end)
+
+    data.connections = { diedConn }
+end
+
+local function applyESP(player)
+    local teamConn = player:GetPropertyChangedSignal("TeamColor"):Connect(function()
+        if ESP[player] and ESP[player].hl then
+            local isPlayerFriend = Cache[player]
+            if not (Settings.RainbowFriends and isPlayerFriend) then
+                local teamColor = getPlayerTeamColor(player)
+                ESP[player].hl.FillColor = teamColor
+                ESP[player].hl.OutlineColor = teamColor
+            end
+        end
+    end)
+
+    ESP[player] = { teamConn = teamConn, connections = {} }
+    checkFriendship(player)
+
+    player.CharacterAdded:Connect(function(char)
+        setupCharacter(player, char)
+    end)
+
+    if player.Character then
+        task.spawn(setupCharacter, player, player.Character)
+    end
+end
+
+-- ==========================================
+-- GUI МЕНЮ
+-- ==========================================
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local oldGui = PlayerGui:FindFirstChild("AimbotConfigGui")
+if oldGui then oldGui:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AimbotConfigGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = PlayerGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 240, 0, 330)
+MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.Text = "Aimbot & ESP (Right Ctrl)"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+Title.Font = Enum.Font.SourceSansBold
+Title.TextSize = 16
+Title.Parent = MainFrame
+
+Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 8)
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = MainFrame
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 6)
+
+Title.LayoutOrder = 0
+
+local function createToggleButton(text, layoutOrder, defaultState, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.9, 0, 0, 30)
+    btn.Position = UDim2.new(0.05, 0, 0, 0)
+    btn.BackgroundColor3 = defaultState and Color3.fromRGB(40, 140, 60) or Color3.fromRGB(140, 40, 40)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.SourceSans
+    btn.TextSize = 14
+    btn.Text = text .. ": " .. (defaultState and "ВКЛ" or "ВЫКЛ")
+    btn.LayoutOrder = layoutOrder
+    btn.Parent = MainFrame
+
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+    local state = defaultState
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(40, 140, 60) or Color3.fromRGB(140, 40, 40)
+        btn.Text = text .. ": " .. (state and "ВКЛ" or "ВЫКЛ")
+        callback(state)
+    end)
+    return btn
+end
+
+createToggleButton("Aimbot", 1, Settings.AimbotEnabled, function(v) Settings.AimbotEnabled = v end)
+createToggleButton("Показывать FOV", 2, Settings.ShowFOV, function(v) Settings.ShowFOV = v end)
+createToggleButton("Проверка команды", 3, Settings.TeamCheck, function(v) Settings.TeamCheck = v end)
+
+local FOVBtn = Instance.new("TextButton")
+FOVBtn.Size = UDim2.new(0.9, 0, 0, 30)
+FOVBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+FOVBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FOVBtn.Font = Enum.Font.SourceSans
+FOVBtn.TextSize = 14
+FOVBtn.Text = "Размер FOV: " .. tostring(Settings.FOVRadius)
+FOVBtn.LayoutOrder = 4
+FOVBtn.Parent = MainFrame
+Instance.new("UICorner", FOVBtn).CornerRadius = UDim.new(0, 5)
+
+local fovPresets = { 50, 100, 150, 200, 250, 300 }
+local currentFovIdx = 1
+
+FOVBtn.MouseButton1Click:Connect(function()
+    currentFovIdx = (currentFovIdx % #fovPresets) + 1
+    Settings.FOVRadius = fovPresets[currentFovIdx]
+    FOVBtn.Text = "Размер FOV: " .. tostring(Settings.FOVRadius)
+end)
+
+local KeyBtn = Instance.new("TextButton")
+KeyBtn.Size = UDim2.new(0.9, 0, 0, 30)
+KeyBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+KeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+KeyBtn.Font = Enum.Font.SourceSans
+KeyBtn.TextSize = 14
+KeyBtn.Text = "Клавиша: ПКМ"
+KeyBtn.LayoutOrder = 5
+KeyBtn.Parent = MainFrame
+Instance.new("UICorner", KeyBtn).CornerRadius = UDim.new(0, 5)
+
+local keysList = {
+    { Enum.UserInputType.MouseButton2, "ПКМ" },
+    { Enum.UserInputType.MouseButton1, "ЛКМ" },
+    { Enum.UserInputType.MouseButton3, "СКМ" }
+}
+local currentKeyIdx = 1
+
+KeyBtn.MouseButton1Click:Connect(function()
+    currentKeyIdx = (currentKeyIdx % #keysList) + 1
+    Settings.AimKey = keysList[currentKeyIdx][1]
+    KeyBtn.Text = "Клавиша: " .. keysList[currentKeyIdx][2]
+end)
+
+local PartBtn = Instance.new("TextButton")
+PartBtn.Size = UDim2.new(0.9, 0, 0, 30)
+PartBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+PartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+PartBtn.Font = Enum.Font.SourceSans
+PartBtn.TextSize = 14
+PartBtn.Text = "Цель: Голова"
+PartBtn.LayoutOrder = 6
+PartBtn.Parent = MainFrame
+Instance.new("UICorner", PartBtn).CornerRadius = UDim.new(0, 5)
+
+PartBtn.MouseButton1Click:Connect(function()
+    if Settings.AimPart == "Head" then
+        Settings.AimPart = "HumanoidRootPart"
+        PartBtn.Text = "Цель: Торс"
+    else
+        Settings.AimPart = "Head"
+        PartBtn.Text = "Цель: Голова"
+    end
+end)
+
+local SmoothBtn = Instance.new("TextButton")
+SmoothBtn.Size = UDim2.new(0.9, 0, 0, 30)
+SmoothBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+SmoothBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+SmoothBtn.Font = Enum.Font.SourceSans
+SmoothBtn.TextSize = 14
+SmoothBtn.Text = "Плавность: " .. tostring(Settings.Smoothness)
+SmoothBtn.LayoutOrder = 7
+SmoothBtn.Parent = MainFrame
+Instance.new("UICorner", SmoothBtn).CornerRadius = UDim.new(0, 5)
+
+local smoothPresets = { 0.8, 1.0 }
+local currentSmoothIdx = 1
+
+SmoothBtn.MouseButton1Click:Connect(function()
+    currentSmoothIdx = (currentSmoothIdx % #smoothPresets) + 1
+    Settings.Smoothness = smoothPresets[currentSmoothIdx]
+    SmoothBtn.Text = "Плавность: " .. tostring(Settings.Smoothness)
+end)
+
+-- ==========================================
+-- ОБРАБОТКА ВВОДА
+-- ==========================================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        MainFrame.Visible = not MainFrame.Visible
+        return
+    end
+
+    if not IsRobloxMenuOpen and input.UserInputType == Settings.AimKey then
+        IsAiming = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Settings.AimKey then
+        IsAiming = false
+    end
+end)
+
+-- ==========================================
+-- MAIN RENDER LOOP
+-- ==========================================
+RunService.RenderStepped:Connect(function(deltaTime)
+    local targetPart = getClosestPlayer()
+
+    if FOVCircle then
+        if IsRobloxMenuOpen then
+            FOVCircle.Visible = false
+        else
+            FOVCircle.Position = getCenterScreenLocation()
+            FOVCircle.Radius = Settings.FOVRadius
+            FOVCircle.Visible = Settings.ShowFOV
+            FOVCircle.Color = targetPart and Settings.FOVColorTarget or Settings.FOVColorNoTarget
+        end
+    end
+
+    if Settings.AimbotEnabled and IsAiming and not IsRobloxMenuOpen then
+        if targetPart then
+            local cameraPos = Camera.CFrame.Position
+            local targetPos = targetPart.Position
+            
+            local targetCFrame = CFrame.lookAt(cameraPos, targetPos)
+            
+            if Settings.Smoothness >= 1 then
+                Camera.CFrame = targetCFrame
+            else
+                local lerpAlpha = math.clamp(deltaTime * (Settings.Smoothness * 25), 0, 1)
+                Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, lerpAlpha)
+            end
+
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
+            if myRoot then
+                local flatTargetPos = Vector3.new(targetPos.X, myRoot.Position.Y, targetPos.Z)
+                myRoot.CFrame = CFrame.lookAt(myRoot.Position, flatTargetPos)
+            end
+        end
+    end
+
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
+    local rainbow = Color3.fromHSV((tick() % 3) / 3, 1, 1)
+    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2
+
+    for p, data in pairs(ESP) do
+        if data.gui and data.root and data.root.Parent then
+            local isPlayerFriend = Cache[p]
+            local teamColor = getPlayerTeamColor(p)
+
+            -- Управление цветом подсветки Highlight
+            if data.hl then
+                if Settings.RainbowFriends and isPlayerFriend then
+                    data.hl.FillColor = rainbow
+                    data.hl.OutlineColor = rainbow
+                else
+                    data.hl.FillColor = teamColor
+                    data.hl.OutlineColor = teamColor
+                end
+            end
+
+            if myRoot and not IsRobloxMenuOpen then
+                local dist = (myRoot.Position - data.root.Position).Magnitude
+                if dist <= Settings.MaxDistance then
+                    local displayName = p.DisplayName
+
+                    if isPlayerFriend then
+                        if Settings.HideFriendsNames then displayName = Settings.CustomFriendName end
+                    else
+                        if Settings.HideOtherNames then displayName = Settings.CustomOtherName end
+                    end
+
+                    local nameColorHex = colorToHex(teamColor)
+
+                    data.lbl.Text = string.format("<font color=\"%s\">%s</font>\n[%d studs]", nameColorHex, displayName, math.floor(dist))
+                    data.gui.Enabled = true
+                else
+                    data.gui.Enabled = false
+                end
+
+                if dist <= Settings.HealthBarDistance and data.hpGui and data.humanoid then
+                    local health = math.clamp(data.humanoid.Health, 0, data.humanoid.MaxHealth)
+                    local maxHealth = math.max(data.humanoid.MaxHealth, 1)
+                    local hpPercent = health / maxHealth
+
+                    data.hpFill.Size = UDim2.fromScale(1, hpPercent)
+
+                    if not data.isDying then
+                        if hpPercent <= 0.25 and health > 0 then
+                            data.lowHpLbl.Text = "LOW HP!"
+                            data.lowHpLbl.TextColor3 = Color3.fromRGB(255, 0, 0)
+                            data.lowHpLbl.Visible = true
+                        else
+                            data.lowHpLbl.Visible = false
+                        end
+                    end
+
+                    if isPlayerFriend then
+                        data.hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
+                        if hpPercent > 0.25 then
+                            data.hpGradient.Enabled = true
+                            local sat = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+                            local val = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
+                            data.hpGradient.Color = ColorSequence.new({
+                                ColorSequenceKeypoint.new(0, Color3.fromHSV(0, sat, val)),
+                                ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.33, sat, val)),
+                                ColorSequenceKeypoint.new(1, Color3.fromHSV(0.66, sat, val))
+                            })
+                            data.hpFill.BackgroundTransparency = (1 - hpPercent) * 0.35
+                        else
+                            data.hpGradient.Enabled = false
+                            local darkRed = Color3.fromRGB(150, 0, 0)
+                            local brightRed = Color3.fromRGB(255, 30, 30)
+                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.5
+                        end
+                    else
+                        data.hpGradient.Enabled = false
+                        local baseColor = Color3.fromHSV(hpPercent * 0.3, 1, 1)
+                        if hpPercent <= 0.25 then
+                            data.hpFill.BackgroundColor3 = baseColor:Lerp(Color3.new(1, 1, 1), pulseAlpha * 0.5)
+                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.5
+                        else
+                            data.hpFill.BackgroundColor3 = baseColor
+                            data.hpFill.BackgroundTransparency = 0
+                        end
+                    end
+                    data.hpGui.Enabled = true
+                elseif data.hpGui then
+                    data.hpGui.Enabled = false
+                end
+            else
+                data.gui.Enabled = false
+                if data.hpGui then data.hpGui.Enabled = false end
+            end
+        end
+    end
+end)
+
+for _, p in ipairs(Players:GetPlayers()) do applyESP(p) end
+Players.PlayerAdded:Connect(applyESP)
+Players.PlayerRemoving:Connect(cleanupPlayer)
