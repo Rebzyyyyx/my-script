@@ -2,7 +2,8 @@ if getgenv().rebzyyxhub_loaded == true then
     while task.wait(99999999) do end
 end
 
--- ==========================================
+
+-- Градиент-- ==========================================
 -- НАСТРОЙКИ ЧАСТИЦ (SPARK TRAIL SETTINGS)
 -- ==========================================
 local ParticleSettings = {
@@ -16,7 +17,6 @@ local ParticleSettings = {
     SpreadAngle = Vector2.new(60, 60) -- Угол разлета во все стороны
 }
 
--- Градиент цвета: Фиолетовый -> 45% плавный переход в Белый
 local PurpleColor = Color3.fromRGB(170, 0, 255)
 local WhiteColor = Color3.fromRGB(255, 255, 255)
 local TrailColorSequence = ColorSequence.new({
