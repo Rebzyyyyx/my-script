@@ -25,6 +25,8 @@ local Settings = {
     WallCheck = true,
     HudKey = Enum.KeyCode.RightShift, -- клавиша открытия худа (меняется в самом худе)
     Arrows = true, -- стрелки-указатели на игроков
+    DeathMarks = true, -- автоматическая метка в месте смерти
+    MusicWidget = true, -- виджет музыки (нужна программа media_bridge.py)
     BulletTracers = true, -- трейсеры патронов (зелёный - попал, красный - промах)
     PredictionTime = 0.05, -- упреждение по скорости цели (сек), 0 = выключено
     MaxAimDistance = 450,
@@ -1258,7 +1260,7 @@ end
 Settings.HudKey = loadHudKey() or Settings.HudKey
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 230, 0, 604)
+MainFrame.Size = UDim2.new(0, 230, 0, 662)
 MainFrame.Position = UDim2.new(0.05, 0, 0.15, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
 MainFrame.BackgroundTransparency = 0.32
@@ -1595,6 +1597,8 @@ end)
 createToggleButton("Проверка стен", 13, Settings.WallCheck, function(v) Settings.WallCheck = v end)
 createToggleButton("Трейсеры патронов", 15, Settings.BulletTracers, function(v) Settings.BulletTracers = v end)
 createToggleButton("Стрелки на игроков", 17, Settings.Arrows, function(v) Settings.Arrows = v end)
+createToggleButton("Музыка-виджет", 20, Settings.MusicWidget, function(v) Settings.MusicWidget = v end)
+createToggleButton("Метки смерти", 21, Settings.DeathMarks, function(v) Settings.DeathMarks = v end)
 
 Freecam.Button = createActionEnumButton(18, "Бинд фрикама", function(btn)
     Freecam.Listening = true
@@ -3072,6 +3076,13 @@ local function initMarks()
         mark.color = { nextColor[1], nextColor[2], nextColor[3] }
     end
 
+    local function getMarkAlpha(mark)
+        if type(mark.alpha) == "number" then
+            return math.clamp(mark.alpha, 0, 1)
+        end
+        return 1
+    end
+
     local function getMarkName(mark)
         if type(mark.name) == "string" and mark.name ~= "" then
             return mark.name
@@ -3103,6 +3114,7 @@ local function initMarks()
         end)
     end
     loadMarks()
+    MarksData.customColors = MarksData.customColors or {} -- свои цвета из выбора цвета (кнопка +)
 
     local function getPlaceEntry(create)
         local entry = MarksData.places[PlaceKey]
@@ -3163,6 +3175,12 @@ local function initMarks()
         pad.PaddingTop = UDim.new(0, 1)
         pad.PaddingBottom = UDim.new(0, 1)
         pad.Parent = l
+        -- мягкий ореол вокруг плашки: имитация размытия подложки текста (настоящего блюра в UI Roblox нет)
+        local halo = Instance.new("UIStroke")
+        halo.Thickness = 3
+        halo.Transparency = 0.78
+        halo.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        halo.Parent = l
         return l
     end
 
@@ -3183,20 +3201,28 @@ local function initMarks()
             NumberSequenceKeypoint.new(1, bottomTransparency),
         })
         g.Parent = f
-        return f
+        return f, g
     end
 
     -- применяет цвет и название метки к уже созданному визуалу
     local function applyMarkStyle(visual, mark)
         local color = getMarkColor(mark)
+        local alpha = getMarkAlpha(mark)
         for _, layer in ipairs(visual.layers) do
             layer.f.BackgroundColor3 = color:Lerp(Color3.fromRGB(255, 255, 255), layer.mix)
+            -- общая прозрачность метки (ползунок "Прозрачность" в выборе цвета)
+            layer.g.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(1, 1 - (1 - layer.bt) * alpha),
+            })
         end
 
         local plate = Color3.fromRGB(20, 70, 78):Lerp(color, 0.35)
-        visual.coordLabel.BackgroundColor3 = plate
-        visual.nameLabel.BackgroundColor3 = plate
-        visual.distLabel.BackgroundColor3 = plate
+        for _, line in ipairs({ visual.coordLabel, visual.nameLabel, visual.distLabel }) do
+            line.BackgroundColor3 = plate
+            local halo = line:FindFirstChildOfClass("UIStroke")
+            if halo then halo.Color = plate end
+        end
 
         visual.nameLabel.Text = getMarkName(mark)
     end
@@ -3209,12 +3235,20 @@ local function initMarks()
 
         -- слои от внешнего мягкого свечения к яркой сердцевине (w - ширина в студах, minPx - минимум на экране)
         local white = Color3.fromRGB(255, 255, 255)
-        local layers = {
-            { f = makeBeamPart(root, white, 1, 0.84), w = 3.4, minPx = 16, mix = 0.0 },
-            { f = makeBeamPart(root, white, 1, 0.62), w = 2.2, minPx = 11, mix = 0.12 },
-            { f = makeBeamPart(root, white, 1, 0.32), w = 1.3, minPx = 7, mix = 0.4 },
-            { f = makeBeamPart(root, white, 1, 0.05), w = 0.6, minPx = 3, mix = 0.82 },
+        -- 6 слоёв: плавный переход от широкого мягкого свечения к яркой узкой сердцевине (bt - непрозрачность у основания)
+        local layerDefs = {
+            { w = 4.6, minPx = 22, mix = 0.0, bt = 0.9 },
+            { w = 3.4, minPx = 17, mix = 0.05, bt = 0.8 },
+            { w = 2.4, minPx = 12, mix = 0.15, bt = 0.65 },
+            { w = 1.6, minPx = 8, mix = 0.35, bt = 0.45 },
+            { w = 1.0, minPx = 5, mix = 0.6, bt = 0.25 },
+            { w = 0.5, minPx = 3, mix = 0.85, bt = 0.08 },
         }
+        local layers = {}
+        for i, def in ipairs(layerDefs) do
+            local f, g = makeBeamPart(root, white, 1, def.bt)
+            layers[i] = { f = f, g = g, w = def.w, minPx = def.minPx, mix = def.mix, bt = def.bt }
+        end
 
         local label = Instance.new("Frame")
         label.AnchorPoint = Vector2.new(0.5, 0)
@@ -3277,6 +3311,7 @@ local function initMarks()
         local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
         local refPos = myRoot and myRoot.Position or cam.CFrame.Position
         local focal = (vp.Y / 2) / math.tan(math.rad(cam.FieldOfView / 2))
+        local blinkOn = math.floor(tick() * 3) % 2 == 0 -- метки смерти мигают ~1.5 раза в секунду
 
         for _, m in ipairs(entry.marks) do
             local v = Rendered[m.id]
@@ -3295,10 +3330,14 @@ local function initMarks()
                     local topY = (top.Z > 0) and top.Y or (base.Y - 400)
                     local height = math.max(base.Y - topY, MARK_MIN_PX_HEIGHT)
 
+                    local isDeath = (m.kind == "death")
                     for _, layer in ipairs(v.layers) do
                         local w = math.clamp(layer.w * pxPerStud, layer.minPx, 240)
                         layer.f.Size = UDim2.fromOffset(w, height)
                         layer.f.Position = UDim2.fromOffset(base.X, base.Y)
+                        if isDeath then
+                            layer.f.BackgroundTransparency = blinkOn and 0 or 0.82
+                        end
                     end
 
                     -- подпись у основания луча; если основание за краем экрана - прижимаем к краю
@@ -3359,6 +3398,7 @@ local function initMarks()
     end
 
     local refreshMarksMenu -- объявлена ниже
+    local openColorPicker  -- объявлена ниже
 
     local function removeMark(placeKey, markId)
         local entry = MarksData.places[placeKey]
@@ -3465,11 +3505,375 @@ local function initMarks()
     MenuHint.Position = UDim2.new(0, 8, 1, -26)
     MenuHint.Size = UDim2.new(1, -16, 0, 18)
     MenuHint.BackgroundTransparency = 1
-    MenuHint.Text = "V - метка | зажать V - меню | цвет - квадрат слева"
+    MenuHint.Text = "V - метка | зажать V - меню | клик по цвету - палитра"
     MenuHint.TextColor3 = Color3.fromRGB(150, 145, 175)
     MenuHint.Font = Enum.Font.Gotham
     MenuHint.TextSize = 11
     MenuHint.Parent = MenuPanel
+
+    -- ---------------- выбор цвета метки (поле насыщенности/яркости, полоса оттенков, прозрачность, пресеты) ----------------
+    local SV_W, SV_H = 176, 132
+    local ALPHA_W = 170
+
+    local PickerPanel = Instance.new("Frame")
+    PickerPanel.Name = "ColorPicker"
+    PickerPanel.AnchorPoint = Vector2.new(0, 0.5)
+    PickerPanel.Position = UDim2.new(0.5, 190, 0.5, 0)
+    PickerPanel.Size = UDim2.fromOffset(232, 322)
+    PickerPanel.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
+    PickerPanel.BackgroundTransparency = 0.2
+    PickerPanel.Visible = false
+    PickerPanel.Parent = MarksGui
+    Instance.new("UICorner", PickerPanel).CornerRadius = UDim.new(0, 12)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(215, 205, 240)
+        st.Transparency = 0.35
+        st.Thickness = 1.5
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st.Parent = PickerPanel
+    end
+
+    local PickerTitle = Instance.new("TextLabel")
+    PickerTitle.Position = UDim2.fromOffset(10, 8)
+    PickerTitle.Size = UDim2.fromOffset(150, 20)
+    PickerTitle.BackgroundTransparency = 1
+    PickerTitle.Text = "Цвет"
+    PickerTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    PickerTitle.Font = Enum.Font.GothamBold
+    PickerTitle.TextSize = 14
+    PickerTitle.TextXAlignment = Enum.TextXAlignment.Left
+    PickerTitle.Parent = PickerPanel
+
+    local PickerClose = Instance.new("TextButton")
+    PickerClose.Position = UDim2.fromOffset(200, 6)
+    PickerClose.Size = UDim2.fromOffset(22, 22)
+    PickerClose.BackgroundColor3 = Color3.fromRGB(90, 30, 40)
+    PickerClose.BackgroundTransparency = 0.3
+    PickerClose.Text = "X"
+    PickerClose.TextColor3 = Color3.fromRGB(255, 200, 200)
+    PickerClose.Font = Enum.Font.GothamBold
+    PickerClose.TextSize = 11
+    PickerClose.Parent = PickerPanel
+    Instance.new("UICorner", PickerClose).CornerRadius = UDim.new(0, 6)
+
+    -- поле насыщенности (слева направо) и яркости (сверху вниз)
+    local SvFrame = Instance.new("Frame")
+    SvFrame.Position = UDim2.fromOffset(10, 34)
+    SvFrame.Size = UDim2.fromOffset(SV_W, SV_H)
+    SvFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    SvFrame.BorderSizePixel = 0
+    SvFrame.Active = true
+    SvFrame.Parent = PickerPanel
+    Instance.new("UICorner", SvFrame).CornerRadius = UDim.new(0, 8)
+    do
+        local white = Instance.new("Frame")
+        white.Size = UDim2.fromScale(1, 1)
+        white.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        white.BorderSizePixel = 0
+        white.Parent = SvFrame
+        Instance.new("UICorner", white).CornerRadius = UDim.new(0, 8)
+        local wg = Instance.new("UIGradient")
+        wg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
+        wg.Parent = white
+
+        local black = Instance.new("Frame")
+        black.Size = UDim2.fromScale(1, 1)
+        black.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        black.BorderSizePixel = 0
+        black.Parent = SvFrame
+        Instance.new("UICorner", black).CornerRadius = UDim.new(0, 8)
+        local bg = Instance.new("UIGradient")
+        bg.Rotation = 90
+        bg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) })
+        bg.Parent = black
+    end
+
+    local SvHandle = Instance.new("Frame")
+    SvHandle.AnchorPoint = Vector2.new(0.5, 0.5)
+    SvHandle.Size = UDim2.fromOffset(14, 14)
+    SvHandle.BackgroundTransparency = 1
+    SvHandle.ZIndex = 5
+    SvHandle.Parent = SvFrame
+    Instance.new("UICorner", SvHandle).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(255, 255, 255)
+        st.Thickness = 2
+        st.Parent = SvHandle
+    end
+
+    -- вертикальная полоса оттенков
+    local HueBar = Instance.new("Frame")
+    HueBar.Position = UDim2.fromOffset(196, 34)
+    HueBar.Size = UDim2.fromOffset(22, SV_H)
+    HueBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    HueBar.BorderSizePixel = 0
+    HueBar.Active = true
+    HueBar.Parent = PickerPanel
+    Instance.new("UICorner", HueBar).CornerRadius = UDim.new(0, 8)
+    do
+        local g = Instance.new("UIGradient")
+        g.Rotation = 90
+        local keys = {}
+        for i = 0, 6 do
+            table.insert(keys, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6, 1, 1)))
+        end
+        g.Color = ColorSequence.new(keys)
+        g.Parent = HueBar
+    end
+    local HueHandle = Instance.new("Frame")
+    HueHandle.AnchorPoint = Vector2.new(0.5, 0.5)
+    HueHandle.Size = UDim2.fromOffset(26, 8)
+    HueHandle.BackgroundTransparency = 1
+    HueHandle.ZIndex = 5
+    HueHandle.Parent = HueBar
+    Instance.new("UICorner", HueHandle).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(255, 255, 255)
+        st.Thickness = 2
+        st.Parent = HueHandle
+    end
+
+    -- прозрачность
+    local AlphaTitle = Instance.new("TextLabel")
+    AlphaTitle.Position = UDim2.fromOffset(10, 174)
+    AlphaTitle.Size = UDim2.fromOffset(160, 14)
+    AlphaTitle.BackgroundTransparency = 1
+    AlphaTitle.Text = "ПРОЗРАЧНОСТЬ"
+    AlphaTitle.TextColor3 = Color3.fromRGB(150, 145, 175)
+    AlphaTitle.Font = Enum.Font.GothamBold
+    AlphaTitle.TextSize = 10
+    AlphaTitle.TextXAlignment = Enum.TextXAlignment.Left
+    AlphaTitle.Parent = PickerPanel
+
+    local AlphaBar = Instance.new("Frame")
+    AlphaBar.Position = UDim2.fromOffset(10, 192)
+    AlphaBar.Size = UDim2.fromOffset(ALPHA_W, 16)
+    AlphaBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    AlphaBar.BorderSizePixel = 0
+    AlphaBar.Active = true
+    AlphaBar.Parent = PickerPanel
+    Instance.new("UICorner", AlphaBar).CornerRadius = UDim.new(1, 0)
+    local AlphaGradient = Instance.new("UIGradient")
+    AlphaGradient.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.85), NumberSequenceKeypoint.new(1, 0) })
+    AlphaGradient.Parent = AlphaBar
+
+    local AlphaHandle = Instance.new("Frame")
+    AlphaHandle.AnchorPoint = Vector2.new(0.5, 0.5)
+    AlphaHandle.Size = UDim2.fromOffset(16, 16)
+    AlphaHandle.BackgroundTransparency = 1
+    AlphaHandle.ZIndex = 5
+    AlphaHandle.Parent = AlphaBar
+    Instance.new("UICorner", AlphaHandle).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(255, 255, 255)
+        st.Thickness = 2
+        st.Parent = AlphaHandle
+    end
+
+    local AlphaValue = Instance.new("TextLabel")
+    AlphaValue.Position = UDim2.fromOffset(184, 190)
+    AlphaValue.Size = UDim2.fromOffset(40, 20)
+    AlphaValue.BackgroundTransparency = 1
+    AlphaValue.TextColor3 = Color3.fromRGB(235, 235, 245)
+    AlphaValue.Font = Enum.Font.Gotham
+    AlphaValue.TextSize = 11
+    AlphaValue.TextXAlignment = Enum.TextXAlignment.Right
+    AlphaValue.Parent = PickerPanel
+
+    -- состояние выбора
+    local pickerMark = nil
+    local pickerOnChange = nil
+    local ph, ps, pv, pa = 0, 1, 1, 1
+    local pickerDirty = false
+    local swatchObjects = {}
+
+    local function currentPickerColor()
+        return Color3.fromHSV(ph, ps, pv)
+    end
+
+    local function updatePicker()
+        local c = currentPickerColor()
+        SvFrame.BackgroundColor3 = Color3.fromHSV(ph, 1, 1)
+        SvHandle.Position = UDim2.fromOffset(ps * SV_W, (1 - pv) * SV_H)
+        HueHandle.Position = UDim2.fromOffset(11, ph * SV_H)
+        AlphaBar.BackgroundColor3 = c
+        AlphaHandle.Position = UDim2.fromOffset(pa * ALPHA_W, 8)
+        AlphaValue.Text = math.floor(pa * 100 + 0.5) .. "%"
+    end
+
+    local function applyPickerColor()
+        if not pickerMark then return end
+        local c = currentPickerColor()
+        pickerMark.color = {
+            math.floor(c.R * 255 + 0.5),
+            math.floor(c.G * 255 + 0.5),
+            math.floor(c.B * 255 + 0.5),
+        }
+        pickerMark.alpha = pa
+        MarksDirty = true
+        pickerDirty = true
+        if pickerOnChange then pickerOnChange() end
+        updatePicker()
+    end
+
+    -- перетаскивание мышью по полю/полосе
+    local function bindDrag(guiObject, handler)
+        local dragging = false
+        guiObject.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                handler(UserInputService:GetMouseLocation())
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                handler(UserInputService:GetMouseLocation())
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+                if pickerDirty then
+                    pickerDirty = false
+                    saveMarks()
+                end
+            end
+        end)
+    end
+
+    bindDrag(SvFrame, function(mouse)
+        local rel = mouse - SvFrame.AbsolutePosition
+        ps = math.clamp(rel.X / SV_W, 0, 1)
+        pv = 1 - math.clamp(rel.Y / SV_H, 0, 1)
+        applyPickerColor()
+    end)
+    bindDrag(HueBar, function(mouse)
+        local rel = mouse - HueBar.AbsolutePosition
+        ph = math.clamp(rel.Y / SV_H, 0, 0.999)
+        applyPickerColor()
+    end)
+    bindDrag(AlphaBar, function(mouse)
+        local rel = mouse - AlphaBar.AbsolutePosition
+        pa = math.clamp(rel.X / ALPHA_W, 0, 1)
+        applyPickerColor()
+    end)
+
+    -- готовые цвета и свои цвета (кнопка +; ПКМ по своему цвету - удалить)
+    local PRESET_INDEXES = { 1, 3, 4, 6, 8 } -- из MARK_COLORS: синий, зелёный, жёлтый, красный, фиолетовый
+
+    local function setPickerFromRGB(rgb)
+        local c = Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+        ph, ps, pv = c:ToHSV()
+        ph = math.clamp(ph, 0, 0.999)
+        applyPickerColor()
+        saveMarks()
+    end
+
+    local refreshSwatches
+    local function makeCircle(x, y, color, selected)
+        local b = Instance.new("TextButton")
+        b.Position = UDim2.fromOffset(x, y)
+        b.Size = UDim2.fromOffset(22, 22)
+        b.BackgroundColor3 = color
+        b.Text = ""
+        b.Parent = PickerPanel
+        Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+        if selected then
+            local st = Instance.new("UIStroke")
+            st.Color = Color3.fromRGB(255, 255, 255)
+            st.Thickness = 2
+            st.Parent = b
+        end
+        table.insert(swatchObjects, b)
+        return b
+    end
+
+    refreshSwatches = function()
+        for _, o in ipairs(swatchObjects) do o:Destroy() end
+        swatchObjects = {}
+
+        local current = pickerMark and getMarkColor(pickerMark) or nil
+        local function isSelected(rgb)
+            if not current then return false end
+            return math.floor(current.R * 255 + 0.5) == rgb[1]
+                and math.floor(current.G * 255 + 0.5) == rgb[2]
+                and math.floor(current.B * 255 + 0.5) == rgb[3]
+        end
+
+        local x = 10
+        for _, idx in ipairs(PRESET_INDEXES) do
+            local rgb = MARK_COLORS[idx]
+            local b = makeCircle(x, 222, Color3.fromRGB(rgb[1], rgb[2], rgb[3]), isSelected(rgb))
+            b.MouseButton1Click:Connect(function()
+                setPickerFromRGB(rgb)
+                refreshSwatches()
+            end)
+            x = x + 26
+        end
+
+        -- кнопка "+" : сохранить текущий цвет в свои
+        local plus = Instance.new("TextButton")
+        plus.Position = UDim2.fromOffset(x + 4, 222)
+        plus.Size = UDim2.fromOffset(22, 22)
+        plus.BackgroundColor3 = Color3.fromRGB(50, 46, 72)
+        plus.BackgroundTransparency = 0.3
+        plus.Text = "+"
+        plus.TextColor3 = Color3.fromRGB(255, 255, 255)
+        plus.Font = Enum.Font.GothamBold
+        plus.TextSize = 16
+        plus.Parent = PickerPanel
+        Instance.new("UICorner", plus).CornerRadius = UDim.new(1, 0)
+        table.insert(swatchObjects, plus)
+        plus.MouseButton1Click:Connect(function()
+            local c = currentPickerColor()
+            local rgb = { math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5) }
+            for _, existing in ipairs(MarksData.customColors) do
+                if existing[1] == rgb[1] and existing[2] == rgb[2] and existing[3] == rgb[3] then return end
+            end
+            if #MarksData.customColors >= 16 then table.remove(MarksData.customColors, 1) end
+            table.insert(MarksData.customColors, rgb)
+            saveMarks()
+            refreshSwatches()
+        end)
+
+        -- свои цвета (до 16, по 8 в ряд)
+        for i, rgb in ipairs(MarksData.customColors) do
+            local row = math.floor((i - 1) / 8)
+            local col = (i - 1) % 8
+            local b = makeCircle(10 + col * 26, 252 + row * 28, Color3.fromRGB(rgb[1], rgb[2], rgb[3]), isSelected(rgb))
+            b.MouseButton1Click:Connect(function()
+                setPickerFromRGB(rgb)
+                refreshSwatches()
+            end)
+            b.MouseButton2Click:Connect(function()
+                table.remove(MarksData.customColors, i)
+                saveMarks()
+                refreshSwatches()
+            end)
+        end
+    end
+
+    PickerClose.MouseButton1Click:Connect(function()
+        PickerPanel.Visible = false
+        pickerMark = nil
+        pickerOnChange = nil
+    end)
+
+    openColorPicker = function(mark, onChange)
+        pickerMark = mark
+        pickerOnChange = onChange
+        local c = getMarkColor(mark)
+        ph, ps, pv = c:ToHSV()
+        ph = math.clamp(ph, 0, 0.999)
+        pa = getMarkAlpha(mark)
+        PickerPanel.Visible = true
+        refreshSwatches()
+        updatePicker()
+    end
 
     local menuRows = {} -- временные объекты меню
 
@@ -3573,10 +3977,9 @@ local function initMarks()
                 Instance.new("UICorner", swatch).CornerRadius = UDim.new(0, 6)
                 glassRim(swatch, 0.3)
                 swatch.MouseButton1Click:Connect(function()
-                    nextMarkColor(m)
-                    swatch.BackgroundColor3 = getMarkColor(m)
-                    saveMarks()
-                    MarksDirty = true
+                    openColorPicker(m, function()
+                        swatch.BackgroundColor3 = getMarkColor(m)
+                    end)
                 end)
 
                 -- название метки: редактируется прямо в списке (Enter или клик вне поля - сохранить)
@@ -3636,10 +4039,75 @@ local function initMarks()
 
     local function toggleMarksMenu()
         MenuPanel.Visible = not MenuPanel.Visible
-        if MenuPanel.Visible then refreshMarksMenu() end
+        if MenuPanel.Visible then
+            refreshMarksMenu()
+        else
+            PickerPanel.Visible = false
+        end
     end
-    MenuClose.MouseButton1Click:Connect(function() MenuPanel.Visible = false end)
+    MenuClose.MouseButton1Click:Connect(function()
+        MenuPanel.Visible = false
+        PickerPanel.Visible = false
+    end)
     refreshMarksMenu()
+
+    -- ---------------- метка смерти ----------------
+    -- Когда ты умираешь, в месте смерти автоматически ставится красная мигающая метка
+    local MAX_DEATH_MARKS = 3 -- хранятся только последние смерти на этом плейсе
+
+    local function placeDeathMark(char)
+        if not Settings.DeathMarks then return end
+        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+        if not root then return end
+
+        local pos = root.Position
+        -- опускаем метку на землю под местом смерти
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+        local hit = Workspace:Raycast(pos, Vector3.new(0, -30, 0), params)
+        if hit then pos = hit.Position end
+
+        local entry = getPlaceEntry(true)
+        entry.name = CurrentPlaceName
+
+        -- старые метки смерти убираем, чтобы не копились
+        local deaths = {}
+        for i, m in ipairs(entry.marks) do
+            if m.kind == "death" then table.insert(deaths, i) end
+        end
+        while #deaths >= MAX_DEATH_MARKS do
+            table.remove(entry.marks, deaths[1])
+            table.remove(deaths, 1)
+            for k = 1, #deaths do deaths[k] = deaths[k] - 1 end
+        end
+
+        table.insert(entry.marks, {
+            id = tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999)),
+            x = pos.X, y = pos.Y, z = pos.Z,
+            kind = "death",
+            name = "Смерть",
+            color = { 255, 40, 40 },
+            creator = LocalPlayer.Name,
+            t = os.time(),
+        })
+        saveMarks()
+        MarksDirty = true
+        showToast("Метка смерти поставлена", Color3.fromRGB(255, 90, 90))
+    end
+
+    local function hookDeath(char)
+        local hum = char:WaitForChild("Humanoid", 10)
+        if not hum then return end
+        hum.Died:Connect(function()
+            placeDeathMark(char)
+            if MenuPanel.Visible then refreshMarksMenu() end
+        end)
+    end
+    LocalPlayer.CharacterAdded:Connect(hookDeath)
+    if LocalPlayer.Character then
+        task.spawn(hookDeath, LocalPlayer.Character)
+    end
 
     -- ---------------- клавиша V: тап / двойной тап / удержание ----------------
     local vHeld = false
@@ -3678,6 +4146,204 @@ local function initMarks()
 end
 
 initMarks()
+
+-- ==========================================
+-- МУЗЫКАЛЬНЫЙ ВИДЖЕТ
+-- Показывает, что играет у тебя на компьютере (Spotify, YouTube Music в браузере и т.д.).
+-- Roblox сам этого не видит, поэтому данные приходят от маленькой программы media_bridge.py,
+-- которая каждую секунду записывает файл RebzyyxHub_music.json в папку workspace экзекутора.
+-- ==========================================
+local function initMusic()
+    local MusicHttp = game:GetService("HttpService")
+    local MUSIC_FILE = "RebzyyxHub_music.json"
+    local STALE_SECONDS = 8 -- если мост не обновлял файл дольше - считаем, что музыки нет
+
+    destroyOldGui("RebzyyxMusicGui")
+    local MusicGui = Instance.new("ScreenGui")
+    MusicGui.Name = "RebzyyxMusicGui"
+    MusicGui.ResetOnSpawn = false
+    MusicGui.DisplayOrder = 6
+    MusicGui.Parent = GuiParent
+
+    -- CanvasGroup позволяет плавно скрывать всю карточку целиком
+    local card = Instance.new("CanvasGroup")
+    card.Position = UDim2.fromOffset(16, 16)
+    card.Size = UDim2.fromOffset(330, 112)
+    card.BackgroundColor3 = Color3.fromRGB(22, 20, 34)
+    card.BackgroundTransparency = 0.22
+    card.GroupTransparency = 1
+    card.Visible = false
+    card.Parent = MusicGui
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 16)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(215, 205, 240)
+        st.Transparency = 0.5
+        st.Thickness = 1.2
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st.Parent = card
+    end
+
+    local cover = Instance.new("ImageLabel")
+    cover.Position = UDim2.fromOffset(10, 10)
+    cover.Size = UDim2.fromOffset(54, 54)
+    cover.BackgroundColor3 = Color3.fromRGB(50, 46, 72)
+    cover.BorderSizePixel = 0
+    cover.ScaleType = Enum.ScaleType.Crop
+    cover.Parent = card
+    Instance.new("UICorner", cover).CornerRadius = UDim.new(0, 9)
+
+    local coverNote = Instance.new("TextLabel")
+    coverNote.Size = UDim2.fromScale(1, 1)
+    coverNote.BackgroundTransparency = 1
+    coverNote.Text = "♪"
+    coverNote.TextColor3 = Color3.fromRGB(200, 195, 225)
+    coverNote.Font = Enum.Font.GothamBold
+    coverNote.TextSize = 24
+    coverNote.Parent = cover
+
+    local function makeText(x, y, w, h, size, bold, color)
+        local t = Instance.new("TextLabel")
+        t.Position = UDim2.fromOffset(x, y)
+        t.Size = UDim2.fromOffset(w, h)
+        t.BackgroundTransparency = 1
+        t.Text = ""
+        t.TextColor3 = color
+        t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+        t.TextSize = size
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.TextTruncate = Enum.TextTruncate.AtEnd
+        t.Parent = card
+        return t
+    end
+
+    local titleLabel = makeText(74, 12, 246, 20, 15, true, Color3.fromRGB(255, 255, 255))
+    local subLabel = makeText(74, 34, 246, 16, 12, false, Color3.fromRGB(170, 165, 190))
+    local albumLabel = makeText(10, 68, 310, 16, 13, true, Color3.fromRGB(240, 240, 248))
+
+    local elapsedLabel = makeText(10, 90, 40, 14, 11, false, Color3.fromRGB(200, 195, 225))
+    local remainLabel = makeText(280, 90, 40, 14, 11, false, Color3.fromRGB(200, 195, 225))
+    remainLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+    local barBg = Instance.new("Frame")
+    barBg.Position = UDim2.fromOffset(52, 95)
+    barBg.Size = UDim2.fromOffset(226, 4)
+    barBg.BackgroundColor3 = Color3.fromRGB(90, 85, 115)
+    barBg.BorderSizePixel = 0
+    barBg.Parent = card
+    Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.fromScale(0, 1)
+    barFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    barFill.BorderSizePixel = 0
+    barFill.Parent = barBg
+    Instance.new("UICorner", barFill).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.Position = UDim2.fromScale(0, 0.5)
+    knob.Size = UDim2.fromOffset(8, 8)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel = 0
+    knob.Parent = barBg
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local function fmtTime(sec)
+        sec = math.max(0, math.floor(sec))
+        return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+    end
+
+    local data = nil
+    local readAt = 0
+    local lastStamp = nil
+    local lastRead = 0
+    local currentCover = nil
+    local shown = false
+
+    local function readMusic()
+        local ok, raw = pcall(function()
+            if isfile and readfile and isfile(MUSIC_FILE) then
+                return readfile(MUSIC_FILE)
+            end
+        end)
+        if not ok or type(raw) ~= "string" or raw == "" then
+            data = nil
+            return
+        end
+        local okJson, decoded = pcall(function() return MusicHttp:JSONDecode(raw) end)
+        if not okJson or type(decoded) ~= "table" then return end -- файл мог быть записан не до конца
+        if decoded.updated ~= lastStamp then
+            lastStamp = decoded.updated
+            readAt = tick()
+        end
+        data = decoded
+    end
+
+    local function setCover(fileName)
+        if fileName == currentCover then return end
+        currentCover = fileName
+        cover.Image = ""
+        coverNote.Visible = true
+        if not fileName then return end
+        pcall(function()
+            local getAsset = getcustomasset or getsynasset
+            if getAsset and isfile and isfile(fileName) then
+                cover.Image = getAsset(fileName)
+                coverNote.Visible = false
+            end
+        end)
+    end
+
+    local function musicStep()
+        local now = tick()
+        if now - lastRead >= 0.5 then
+            lastRead = now
+            if Settings.MusicWidget then readMusic() else data = nil end
+        end
+
+        local active = Settings.MusicWidget and data ~= nil
+            and data.playing == true
+            and tostring(data.title or "") ~= ""
+            and math.abs(os.time() - (tonumber(data.updated) or 0)) <= STALE_SECONDS
+
+        if active ~= shown then
+            shown = active
+            if active then card.Visible = true end
+            TweenService:Create(card, TweenInfo.new(0.3), { GroupTransparency = active and 0 or 1 }):Play()
+            if not active then
+                task.delay(0.35, function()
+                    if not shown then card.Visible = false end
+                end)
+            end
+        end
+        if not active then return end
+
+        titleLabel.Text = tostring(data.title or "")
+        local artist = tostring(data.artist or "")
+        local app = tostring(data.app or "")
+        subLabel.Text = (artist ~= "" and app ~= "") and (artist .. " - " .. app) or (artist .. app)
+        albumLabel.Text = tostring(data.album or "")
+        setCover(type(data.cover) == "string" and data.cover or nil)
+
+        -- позиция: между обновлениями файла добавляем прошедшее время
+        local duration = tonumber(data.duration) or 0
+        local position = (tonumber(data.position) or 0) + (now - readAt)
+        if duration > 0 then position = math.min(position, duration) end
+        local ratio = duration > 0 and math.clamp(position / duration, 0, 1) or 0
+
+        barFill.Size = UDim2.fromScale(ratio, 1)
+        knob.Position = UDim2.fromScale(ratio, 0.5)
+        elapsedLabel.Text = fmtTime(position)
+        remainLabel.Text = duration > 0 and ("-" .. fmtTime(duration - position)) or ""
+    end
+
+    RunService.RenderStepped:Connect(function()
+        safeStep("Музыка", musicStep)
+    end)
+end
+
+initMusic()
 
 -- ==========================================
 -- СМЕРТЬ / РЕСПАВН: сбрасываем состояние, перепривязываем наводку, восстанавливаем указатели
