@@ -26,7 +26,7 @@ local Settings = {
     HudKey = Enum.KeyCode.RightShift, -- клавиша открытия худа (меняется в самом худе)
     Arrows = true, -- стрелки-указатели на игроков
     DeathMarks = true, -- автоматическая метка в месте смерти
-    MusicWidget = true, -- виджет музыки (нужна программа media_bridge.py)
+    MusicWidget = false, -- виджет музыки внутри Roblox (основной виджет теперь запускается батником поверх всех окон)
     BulletTracers = true, -- трейсеры патронов (зелёный - попал, красный - промах)
     PredictionTime = 0.05, -- упреждение по скорости цели (сек), 0 = выключено
     MaxAimDistance = 450,
@@ -36,6 +36,60 @@ local Settings = {
     TargetESPEnabled = true,
     SoulCount = 14,
 }
+
+-- ==========================================
+-- СОХРАНЕНИЕ НАСТРОЕК (раз в минуту) - аимбот, ESP, FOV, стрелки и т.д.
+-- Файл: RebzyyxHub_settings.json в workspace экзекутора. Чтобы сбросить настройки - удали файл.
+-- ==========================================
+local SETTINGS_FILE = "RebzyyxHub_settings.json"
+local SavedExtras = {} -- прочие сохранённые значения (например, радиус стрелок)
+
+local function serializeValue(v)
+    local t = typeof(v)
+    if t == "boolean" or t == "number" or t == "string" then
+        return v
+    elseif t == "EnumItem" then
+        return { enum = tostring(v.EnumType), name = v.Name }
+    end
+    return nil
+end
+
+local function deserializeValue(v, current)
+    if type(v) == "table" and v.enum and v.name then
+        local ok, item = pcall(function() return Enum[v.enum][v.name] end)
+        if ok and item then return item end
+        return nil
+    end
+    if typeof(v) == typeof(current) then return v end -- тип должен совпадать с текущим значением
+    return nil
+end
+
+local function loadSettings()
+    pcall(function()
+        if not (isfile and readfile and isfile(SETTINGS_FILE)) then return end
+        local data = game:GetService("HttpService"):JSONDecode(readfile(SETTINGS_FILE))
+        if type(data) ~= "table" then return end
+        if type(data.Settings) == "table" then
+            for key, value in pairs(data.Settings) do
+                local current = Settings[key]
+                if current ~= nil then
+                    local v = deserializeValue(value, current)
+                    if v ~= nil then Settings[key] = v end
+                end
+            end
+        end
+        if type(data.Extras) == "table" then SavedExtras = data.Extras end
+    end)
+end
+loadSettings()
+
+-- индекс значения в списке пресетов (чтобы кнопки худа совпадали с загруженными настройками)
+local function findIdx(list, value, default)
+    for i, v in ipairs(list) do
+        if v == value then return i end
+    end
+    return default
+end
 
 local ParticleSettings = {
     Enabled = true,
@@ -1557,7 +1611,7 @@ createToggleButton("ESP", 6, Settings.ESPEnabled, function(v) Settings.ESPEnable
 createToggleButton("Target ESP", 7, Settings.TargetESPEnabled, function(v) Settings.TargetESPEnabled = v end)
 
 local soulCountsList = { 6, 10, 14 }
-local currentSoulIdx = 3
+local currentSoulIdx = findIdx(soulCountsList, Settings.SoulCount, 3)
 createActionEnumButton(8, "Кристаллы: " .. tostring(Settings.SoulCount), function(btn)
     currentSoulIdx = (currentSoulIdx % #soulCountsList) + 1
     Settings.SoulCount = soulCountsList[currentSoulIdx]
@@ -1565,7 +1619,7 @@ createActionEnumButton(8, "Кристаллы: " .. tostring(Settings.SoulCount)
 end)
 
 local fovPresets = { 50, 100, 150, 200, 250, 300 }
-local currentFovIdx = 3
+local currentFovIdx = findIdx(fovPresets, Settings.FOVRadius, 3)
 createActionEnumButton(9, "Размер FOV: " .. tostring(Settings.FOVRadius), function(btn)
     currentFovIdx = (currentFovIdx % #fovPresets) + 1
     Settings.FOVRadius = fovPresets[currentFovIdx]
@@ -1575,19 +1629,22 @@ end)
 
 local keysList = { { Enum.UserInputType.MouseButton2, "ПКМ" }, { Enum.UserInputType.MouseButton1, "ЛКМ" }, { Enum.UserInputType.MouseButton3, "СКМ" } }
 local currentKeyIdx = 1
-createActionEnumButton(10, "Клавиша: ПКМ", function(btn)
+for i, entryKey in ipairs(keysList) do
+    if entryKey[1] == Settings.AimKey then currentKeyIdx = i end
+end
+createActionEnumButton(10, "Клавиша: " .. keysList[currentKeyIdx][2], function(btn)
     currentKeyIdx = (currentKeyIdx % #keysList) + 1
     Settings.AimKey = keysList[currentKeyIdx][1]
     btn.Text = "Клавиша: " .. keysList[currentKeyIdx][2]
 end)
 
-createActionEnumButton(11, "Цель: Голова", function(btn)
+createActionEnumButton(11, Settings.AimPart == "Head" and "Цель: Голова" or "Цель: Торс", function(btn)
     if Settings.AimPart == "Head" then Settings.AimPart = "HumanoidRootPart" btn.Text = "Цель: Торс"
     else Settings.AimPart = "Head" btn.Text = "Цель: Голова" end
 end)
 
 local smoothPresets = { 0.6, 0.8, 1.0 }
-local currentSmoothIdx = 1
+local currentSmoothIdx = findIdx(smoothPresets, Settings.Smoothness, 1)
 createActionEnumButton(12, "Плавность: " .. tostring(Settings.Smoothness), function(btn)
     currentSmoothIdx = (currentSmoothIdx % #smoothPresets) + 1
     Settings.Smoothness = smoothPresets[currentSmoothIdx]
@@ -1611,7 +1668,7 @@ HudKeyButton = createActionEnumButton(16, "Бинд худа: " .. Settings.HudK
 end)
 
 local predictionPresets = { 0, 0.05, 0.1, 0.15 }
-local currentPredIdx = 2
+local currentPredIdx = findIdx(predictionPresets, Settings.PredictionTime, 2)
 createActionEnumButton(14, "Упреждение: " .. tostring(Settings.PredictionTime), function(btn)
     currentPredIdx = (currentPredIdx % #predictionPresets) + 1
     Settings.PredictionTime = predictionPresets[currentPredIdx]
@@ -1867,6 +1924,9 @@ local ArrowSettings = {
 do
     local radiusPresets = { 70, 110, 150, 200, 260, 330 }
     local radiusIdx = 3 -- 150
+    if type(SavedExtras.ArrowRadius) == "number" then
+        ArrowSettings.Radius = SavedExtras.ArrowRadius
+    end
     for i, r in ipairs(radiusPresets) do
         if r == ArrowSettings.Radius then radiusIdx = i end
     end
@@ -1877,6 +1937,30 @@ do
         btn.Text = "Радиус стрелок: " .. ArrowSettings.Radius
     end)
 end
+
+-- сохранение настроек каждую минуту
+local function saveSettings()
+    pcall(function()
+        if not writefile then return end
+        local out = {}
+        for key, value in pairs(Settings) do
+            local v = serializeValue(value)
+            if v ~= nil then out[key] = v end
+        end
+        writefile(SETTINGS_FILE, game:GetService("HttpService"):JSONEncode({
+            Settings = out,
+            Extras = { ArrowRadius = ArrowSettings.Radius },
+            saved = os.time(),
+        }))
+    end)
+end
+
+task.spawn(function()
+    while true do
+        task.wait(60)
+        saveSettings()
+    end
+end)
 
 destroyOldGui("RebzyyxArrowsGui")
 local ArrowGui = nil -- создаётся (и при необходимости пересоздаётся) в ensureArrowGui()
@@ -3139,6 +3223,7 @@ local function initMarks()
     end)
 
     local MarksDirty = true
+    local removeMarkFn = nil -- присваивается ниже, после объявления removeMark
 
     -- ---------------- GUI ----------------
     destroyOldGui("RebzyyxMarksGui")
@@ -3204,6 +3289,146 @@ local function initMarks()
         return f, g
     end
 
+    -- ---------------- 3D-модель метки: мягкий световой столб + свет + свечение на земле ----------------
+    -- Создаётся только когда метка ближе MARK_3D_RADIUS; дальше остаётся только текст.
+    local MARK_3D_RADIUS = 680
+    local MARK_3D_HIDE_RADIUS = 720   -- небольшой запас, чтобы модель не мерцала на границе
+    local MARK_3D_HEIGHT = 11         -- высота столба (студов)
+    local DEATH_MARK_VANISH_DISTANCE = 10 -- метка смерти пропадает, когда ты подошёл ближе
+
+    do
+        local old3D = Workspace:FindFirstChild("RebzyyxMarks3D")
+        if old3D then old3D:Destroy() end
+    end
+    local Marks3D = nil
+    local function get3DFolder()
+        if Marks3D and Marks3D.Parent then return Marks3D end
+        Marks3D = Instance.new("Folder")
+        Marks3D.Name = "RebzyyxMarks3D"
+        Marks3D.Parent = Workspace
+        return Marks3D
+    end
+
+    -- слои столба: от широкого прозрачного свечения к узкой яркой сердцевине
+    local LAYERS_3D = {
+        { w = 5.4, bt = 0.93, mix = 0.0 },
+        { w = 3.9, bt = 0.85, mix = 0.05 },
+        { w = 2.7, bt = 0.72, mix = 0.15 },
+        { w = 1.8, bt = 0.55, mix = 0.35 },
+        { w = 1.1, bt = 0.34, mix = 0.6 },
+        { w = 0.55, bt = 0.14, mix = 0.85 },
+    }
+
+    local function makeFixedPart(parent, name)
+        local part = Instance.new("Part")
+        part.Name = name
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanQuery = false
+        part.CanTouch = false
+        part.CastShadow = false
+        part.Parent = parent
+        return part
+    end
+
+    local function create3D(mark)
+        local folder = get3DFolder()
+        local pos = Vector3.new(mark.x, mark.y, mark.z)
+
+        local anchor = makeFixedPart(folder, "MarkAnchor")
+        anchor.Transparency = 1
+        anchor.Size = Vector3.new(0.4, 0.4, 0.4)
+        anchor.CFrame = CFrame.new(pos + Vector3.new(0, 0.3, 0))
+
+        local a0 = Instance.new("Attachment")
+        a0.Position = Vector3.new(0, 0, 0)
+        a0.Parent = anchor
+        local a1 = Instance.new("Attachment")
+        a1.Position = Vector3.new(0, MARK_3D_HEIGHT, 0)
+        a1.Parent = anchor
+
+        local beams = {}
+        for i, def in ipairs(LAYERS_3D) do
+            local beam = Instance.new("Beam")
+            beam.Attachment0 = a0
+            beam.Attachment1 = a1
+            beam.Width0 = def.w
+            beam.Width1 = def.w * 0.55
+            beam.FaceCamera = true      -- столб всегда виден "в профиль" с любой стороны
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Parent = anchor
+            beams[i] = { beam = beam, def = def }
+        end
+
+        -- мягкий свет, освещающий землю и стены вокруг метки
+        local light = Instance.new("PointLight")
+        light.Range = 22
+        light.Brightness = 1.6
+        light.Shadows = false
+        light.Parent = anchor
+
+        -- свечение на земле под столбом
+        local disc = makeFixedPart(folder, "MarkGlow")
+        disc.Shape = Enum.PartType.Cylinder
+        disc.Material = Enum.Material.Neon
+        disc.Size = Vector3.new(0.1, 7, 7)
+        disc.CFrame = CFrame.new(pos + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
+
+        return { anchor = anchor, beams = beams, light = light, disc = disc, blink = nil,
+                 lightBrightness = 1.6, discTransparency = 0.7 }
+    end
+
+    local function apply3DStyle(m3, mark)
+        local color = getMarkColor(mark)
+        local alpha = getMarkAlpha(mark)
+        local white = Color3.fromRGB(255, 255, 255)
+
+        for _, entry in ipairs(m3.beams) do
+            local def = entry.def
+            entry.beam.Color = ColorSequence.new(color:Lerp(white, def.mix))
+            local solid = 1 - (1 - def.bt) * alpha
+            local dim = 1 - (1 - def.bt) * alpha * 0.12 -- "погашенное" состояние для мигания
+            entry.seqOn = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, solid),
+                NumberSequenceKeypoint.new(0.5, solid + (1 - solid) * 0.55),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+            entry.seqOff = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, dim),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+            entry.beam.Transparency = entry.seqOn
+        end
+
+        m3.lightBrightness = 1.6 * alpha
+        m3.light.Color = color
+        m3.light.Brightness = m3.lightBrightness
+        m3.discTransparency = 1 - 0.3 * alpha
+        m3.disc.Color = color
+        m3.disc.Transparency = m3.discTransparency
+        m3.blink = nil
+    end
+
+    -- мигание (для меток смерти)
+    local function set3DBlink(m3, on)
+        if m3.blink == on then return end
+        m3.blink = on
+        for _, entry in ipairs(m3.beams) do
+            entry.beam.Transparency = on and entry.seqOn or entry.seqOff
+        end
+        m3.light.Brightness = on and m3.lightBrightness or m3.lightBrightness * 0.15
+        m3.disc.Transparency = on and m3.discTransparency or 0.95
+    end
+
+    local function destroy3D(visual)
+        local m3 = visual.m3
+        if not m3 then return end
+        visual.m3 = nil
+        pcall(function() m3.anchor:Destroy() end)
+        pcall(function() m3.disc:Destroy() end)
+    end
+
     -- применяет цвет и название метки к уже созданному визуалу
     local function applyMarkStyle(visual, mark)
         local color = getMarkColor(mark)
@@ -3225,6 +3450,8 @@ local function initMarks()
         end
 
         visual.nameLabel.Text = getMarkName(mark)
+
+        if visual.m3 then apply3DStyle(visual.m3, mark) end
     end
 
     local function createMarkVisual(mark)
@@ -3247,6 +3474,7 @@ local function initMarks()
         local layers = {}
         for i, def in ipairs(layerDefs) do
             local f, g = makeBeamPart(root, white, 1, def.bt)
+            f.Visible = false -- 2D-столб отключён: вместо него 3D-модель рядом и текст всегда
             layers[i] = { f = f, g = g, w = def.w, minPx = def.minPx, mix = def.mix, bt = def.bt }
         end
 
@@ -3292,6 +3520,7 @@ local function initMarks()
         end
         for id, visual in pairs(Rendered) do
             if not alive[id] then
+                destroy3D(visual)
                 visual.root:Destroy()
                 Rendered[id] = nil
             end
@@ -3313,6 +3542,8 @@ local function initMarks()
         local focal = (vp.Y / 2) / math.tan(math.rad(cam.FieldOfView / 2))
         local blinkOn = math.floor(tick() * 3) % 2 == 0 -- метки смерти мигают ~1.5 раза в секунду
 
+        local toRemove = {}
+
         for _, m in ipairs(entry.marks) do
             local v = Rendered[m.id]
             if v then
@@ -3320,27 +3551,29 @@ local function initMarks()
                 local base = cam:WorldToViewportPoint(pos)
                 local dist = (pos - refPos).Magnitude
 
+                -- метка смерти исчезает, когда ты подошёл к ней вплотную
+                if m.kind == "death" and myRoot and dist <= DEATH_MARK_VANISH_DISTANCE then
+                    table.insert(toRemove, m.id)
+                end
+
+                -- 3D-модель: появляется в радиусе 680 студов, дальше остаётся только текст
+                if dist <= MARK_3D_RADIUS then
+                    if v.m3 and not v.m3.anchor.Parent then destroy3D(v) end -- игра могла удалить объект
+                    if not v.m3 then
+                        v.m3 = create3D(m)
+                        apply3DStyle(v.m3, m)
+                    end
+                    if m.kind == "death" then set3DBlink(v.m3, blinkOn) end
+                elseif dist > MARK_3D_HIDE_RADIUS and v.m3 then
+                    destroy3D(v)
+                end
+
+                -- текст виден всегда (подпись у основания; если основание за краем экрана - прижимаем к краю)
                 if base.Z <= 0 or dist > MARK_MAX_DISTANCE then
                     v.root.Visible = false -- метка позади камеры
                 else
                     v.root.Visible = true
 
-                    local pxPerStud = focal / base.Z
-                    local top = cam:WorldToViewportPoint(pos + Vector3.new(0, MARK_BEAM_HEIGHT, 0))
-                    local topY = (top.Z > 0) and top.Y or (base.Y - 400)
-                    local height = math.max(base.Y - topY, MARK_MIN_PX_HEIGHT)
-
-                    local isDeath = (m.kind == "death")
-                    for _, layer in ipairs(v.layers) do
-                        local w = math.clamp(layer.w * pxPerStud, layer.minPx, 240)
-                        layer.f.Size = UDim2.fromOffset(w, height)
-                        layer.f.Position = UDim2.fromOffset(base.X, base.Y)
-                        if isDeath then
-                            layer.f.BackgroundTransparency = blinkOn and 0 or 0.82
-                        end
-                    end
-
-                    -- подпись у основания луча; если основание за краем экрана - прижимаем к краю
                     local lx = math.clamp(base.X, 90, math.max(vp.X - 90, 91))
                     local ly = math.clamp(base.Y + 6, 10, math.max(vp.Y - 70, 11))
                     v.label.Position = UDim2.fromOffset(lx, ly)
@@ -3352,6 +3585,13 @@ local function initMarks()
                     end
                 end
             end
+        end
+
+        if #toRemove > 0 then
+            for _, id in ipairs(toRemove) do
+                removeMarkFn(PlaceKey, id)
+            end
+            showToast("Метка смерти убрана", Color3.fromRGB(200, 200, 210))
         end
     end
 
@@ -3415,6 +3655,8 @@ local function initMarks()
         saveMarks()
         MarksDirty = true
     end
+
+    removeMarkFn = removeMark
 
     local function removeAllMarks(placeKey)
         MarksData.places[placeKey] = nil
@@ -3726,12 +3968,14 @@ local function initMarks()
         guiObject.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
                 dragging = true
-                handler(UserInputService:GetMouseLocation())
+                -- позиция из самого события лежит в тех же координатах, что и AbsolutePosition
+                -- (GetMouseLocation даёт сдвиг на высоту верхней панели Roblox - из-за этого ползунок был ниже курсора)
+                handler(Vector2.new(input.Position.X, input.Position.Y))
             end
         end)
         UserInputService.InputChanged:Connect(function(input)
             if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                handler(UserInputService:GetMouseLocation())
+                handler(Vector2.new(input.Position.X, input.Position.Y))
             end
         end)
         UserInputService.InputEnded:Connect(function(input)
