@@ -26,7 +26,8 @@ local Settings = {
     HudKey = Enum.KeyCode.RightShift, -- клавиша открытия худа (меняется в самом худе)
     Arrows = true, -- стрелки-указатели на игроков
     DeathMarks = true, -- автоматическая метка в месте смерти
-    MusicWidget = false, -- виджет музыки внутри Roblox (основной виджет теперь запускается батником поверх всех окон)
+    Network = true, -- общий канал пользователей скрипта: значки в ESP и общие метки
+    NightVision = true, -- ночное зрение в тёмных местах
     BulletTracers = true, -- трейсеры патронов (зелёный - попал, красный - промах)
     PredictionTime = 0.05, -- упреждение по скорости цели (сек), 0 = выключено
     MaxAimDistance = 450,
@@ -132,6 +133,18 @@ end
 
 local Cache = {}
 local TargetSet = {} -- таргет-лист: [UserId] = { name, display }, добавляется на СКМ
+
+-- ---- Сеть пользователей скрипта (общий канал на сервере) ----
+-- Создатель скрипта: впиши свой UserId (число) ИЛИ ник Roblox - тогда у тебя будет значок и надпись Creator
+local CREATOR_USER_ID = 0
+local CREATOR_USERNAME = ""
+local SCRIPT_VERSION = "2"
+
+local ScriptUsers = {}      -- [UserId] = { seen = os.clock(), name = "..." } - кто на этом сервере тоже использует скрипт
+local PeerMarks = {}        -- метки других пользователей скрипта (только на время сессии): [id] = метка
+local PeerState = { version = 0 } -- увеличивается при изменении PeerMarks (чтобы метки перерисовались)
+local NetSend = nil         -- функция отправки сообщения в общий канал (задаётся сетевым модулем)
+local ScriptAvatarAsset = nil -- rbxasset-путь к аватарке скрипта (задаётся сетевым модулем)
 local ESP = {}
 local IsAiming = false
 local IsRobloxMenuOpen = false
@@ -1032,7 +1045,7 @@ local function setupCharacter(player, char)
 
     local gui = Instance.new("BillboardGui")
     gui.Name = "ESP_GUI"
-    gui.Size = UDim2.new(0, 180, 0, 55)
+    gui.Size = UDim2.new(0, 180, 0, 84) -- выше обычного: сверху помещается значок скрипта
     gui.StudsOffset = Vector3.new(0, 3.2, 0)
     gui.AlwaysOnTop = true
     gui.Enabled = false
@@ -1051,6 +1064,53 @@ local function setupCharacter(player, char)
     verticalLayout.SortOrder = Enum.SortOrder.LayoutOrder
     verticalLayout.Padding = UDim.new(0, 4)
     verticalLayout.Parent = mainHolder
+
+    -- значок скрипта над кружком игрока (виден только у тех, кто тоже использует скрипт)
+    local badgeRow = Instance.new("Frame")
+    badgeRow.Name = "ScriptBadgeRow"
+    badgeRow.LayoutOrder = 0
+    badgeRow.Size = UDim2.new(0, 180, 0, 24)
+    badgeRow.BackgroundTransparency = 1
+    badgeRow.Visible = false
+    badgeRow.Parent = mainHolder
+
+    local badgeLayout = Instance.new("UIListLayout")
+    badgeLayout.FillDirection = Enum.FillDirection.Horizontal
+    badgeLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    badgeLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    badgeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    badgeLayout.Padding = UDim.new(0, 5)
+    badgeLayout.Parent = badgeRow
+
+    local badgeImg = Instance.new("ImageLabel")
+    badgeImg.Name = "ScriptBadge"
+    badgeImg.LayoutOrder = 1
+    badgeImg.Size = UDim2.fromOffset(24, 24)
+    badgeImg.BackgroundColor3 = Color3.fromRGB(150, 90, 240) -- виден как фиолетовый кружок, пока аватарка не загрузилась
+    badgeImg.BorderSizePixel = 0
+    badgeImg.Parent = badgeRow
+    Instance.new("UICorner", badgeImg).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(230, 210, 255)
+        st.Thickness = 1.5
+        st.Parent = badgeImg
+    end
+
+    local creatorLbl = Instance.new("TextLabel")
+    creatorLbl.Name = "CreatorLabel"
+    creatorLbl.LayoutOrder = 2
+    creatorLbl.AutomaticSize = Enum.AutomaticSize.X
+    creatorLbl.Size = UDim2.fromOffset(0, 24)
+    creatorLbl.BackgroundTransparency = 1
+    creatorLbl.Text = "Creator"
+    creatorLbl.TextColor3 = Color3.fromRGB(196, 140, 255)
+    creatorLbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    creatorLbl.TextStrokeTransparency = 0.2
+    creatorLbl.Font = Enum.Font.GothamBold
+    creatorLbl.TextSize = 15
+    creatorLbl.Visible = false
+    creatorLbl.Parent = badgeRow
 
     local statusLbl = Instance.new("TextLabel")
     statusLbl.Name = "StatusLabel"
@@ -1202,6 +1262,7 @@ local function setupCharacter(player, char)
 
     data.root = root; data.hl = hl; data.gui = gui; data.lbl = lbl
     data.humanoid = humanoid; data.hpGui = hpGui
+    data.badgeRow = badgeRow; data.badgeImg = badgeImg; data.creatorLbl = creatorLbl
     hl.Archivable = false; gui.Archivable = false; hpGui.Archivable = false
     data.hpFill = hpFill; data.statusLbl = statusLbl
     data.avatarImg = avatarImg; data.avatarFrame = avatarFrame; data.avatarStroke = avatarStroke; data.avatarGradient = avatarGradient
@@ -1314,7 +1375,7 @@ end
 Settings.HudKey = loadHudKey() or Settings.HudKey
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 230, 0, 662)
+MainFrame.Size = UDim2.new(0, 230, 0, 691)
 MainFrame.Position = UDim2.new(0.05, 0, 0.15, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
 MainFrame.BackgroundTransparency = 0.32
@@ -1654,8 +1715,9 @@ end)
 createToggleButton("Проверка стен", 13, Settings.WallCheck, function(v) Settings.WallCheck = v end)
 createToggleButton("Трейсеры патронов", 15, Settings.BulletTracers, function(v) Settings.BulletTracers = v end)
 createToggleButton("Стрелки на игроков", 17, Settings.Arrows, function(v) Settings.Arrows = v end)
-createToggleButton("Музыка-виджет", 20, Settings.MusicWidget, function(v) Settings.MusicWidget = v end)
 createToggleButton("Метки смерти", 21, Settings.DeathMarks, function(v) Settings.DeathMarks = v end)
+createToggleButton("Сеть скрипта", 22, Settings.Network, function(v) Settings.Network = v end)
+createToggleButton("Ночное зрение", 23, Settings.NightVision, function(v) Settings.NightVision = v end)
 
 Freecam.Button = createActionEnumButton(18, "Бинд фрикама", function(btn)
     Freecam.Listening = true
@@ -2313,6 +2375,20 @@ local function espStep(deltaTime)
             local teamColor = p.TeamColor and p.TeamColor.Color or Color3.new(1, 1, 1)
             -- "Игнор друзей" включён: друзья светятся зелёным (все остальные настройки ESP работают как обычно)
             local isTarget = TargetSet[p.UserId] ~= nil
+
+            -- значок скрипта: у пользователей скрипта (по сигналам общего канала); у создателя ещё надпись Creator
+            if data.badgeRow then
+                local su = ScriptUsers[p.UserId]
+                local isUser = su ~= nil and (os.clock() - su.seen) < 80
+                -- создатель отмечается, пока он на сервере (не ждём сигнала из канала)
+                local isCreatorHere = CREATOR_USER_ID ~= 0 and p.UserId == CREATOR_USER_ID
+                data.badgeRow.Visible = isUser or isCreatorHere
+                data.creatorLbl.Visible = isCreatorHere
+                if (isUser or isCreatorHere) and ScriptAvatarAsset and data.badgeImg.Image ~= ScriptAvatarAsset then
+                    data.badgeImg.Image = ScriptAvatarAsset
+                    data.badgeImg.BackgroundTransparency = 1
+                end
+            end
             -- friendGreen = "особый цвет" (друг при Игнор друзей, либо таргет): радуга на таких не действует
             local friendGreen = ((Settings.IgnoreFriends and isFriend) or isTarget) and true or false
             local espColor = isTarget and Color3.fromRGB(255, 40, 40)
@@ -3388,6 +3464,7 @@ local function initMarks()
             local def = entry.def
             entry.beam.Color = ColorSequence.new(color:Lerp(white, def.mix))
             local solid = 1 - (1 - def.bt) * alpha
+            entry.solid = solid
             local dim = 1 - (1 - def.bt) * alpha * 0.12 -- "погашенное" состояние для мигания
             entry.seqOn = NumberSequence.new({
                 NumberSequenceKeypoint.new(0, solid),
@@ -3408,6 +3485,7 @@ local function initMarks()
         m3.disc.Color = color
         m3.disc.Transparency = m3.discTransparency
         m3.blink = nil
+        m3.lastPulse = nil
     end
 
     -- мигание (для меток смерти)
@@ -3419,6 +3497,22 @@ local function initMarks()
         end
         m3.light.Brightness = on and m3.lightBrightness or m3.lightBrightness * 0.15
         m3.disc.Transparency = on and m3.discTransparency or 0.95
+    end
+
+    -- мягкая пульсация яркости (0..1): столб, свет и свечение на земле
+    local function set3DPulse(m3, f)
+        if m3.lastPulse and math.abs(m3.lastPulse - f) < 0.02 then return end
+        m3.lastPulse = f
+        for _, entry in ipairs(m3.beams) do
+            local solid = 1 - (1 - entry.solid) * f
+            entry.beam.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, solid),
+                NumberSequenceKeypoint.new(0.5, solid + (1 - solid) * 0.55),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+        end
+        m3.light.Brightness = m3.lightBrightness * f
+        m3.disc.Transparency = 1 - (1 - m3.discTransparency) * f
     end
 
     local function destroy3D(visual)
@@ -3504,12 +3598,25 @@ local function initMarks()
         return visual
     end
 
+    -- все метки для отрисовки: свои (сохранённые) + метки других пользователей скрипта
+    local function allMarks()
+        local list = {}
+        local entry = MarksData.places[PlaceKey]
+        if entry then
+            for _, m in ipairs(entry.marks) do list[#list + 1] = m end
+        end
+        for _, m in pairs(PeerMarks) do list[#list + 1] = m end
+        return list
+    end
+
+    local seenPeerVersion = -1
+
     local function syncWorldMarks()
         MarksDirty = false
-        local entry = MarksData.places[PlaceKey]
+        seenPeerVersion = PeerState.version
         local alive = {}
-        if entry then
-            for _, m in ipairs(entry.marks) do
+        do
+            for _, m in ipairs(allMarks()) do
                 alive[m.id] = true
                 if not Rendered[m.id] then
                     Rendered[m.id] = createMarkVisual(m)
@@ -3529,22 +3636,23 @@ local function initMarks()
 
     -- отрисовка меток каждый кадр
     local function marksStep()
-        if MarksDirty then syncWorldMarks() end
+        if MarksDirty or seenPeerVersion ~= PeerState.version then syncWorldMarks() end
 
-        local entry = MarksData.places[PlaceKey]
+        local marksList = allMarks()
         local cam = Workspace.CurrentCamera
-        if not entry or not cam then return end
+        if #marksList == 0 or not cam then return end
 
         local vp = cam.ViewportSize
         local myChar = LocalPlayer.Character
         local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
         local refPos = myRoot and myRoot.Position or cam.CFrame.Position
         local focal = (vp.Y / 2) / math.tan(math.rad(cam.FieldOfView / 2))
-        local blinkOn = math.floor(tick() * 3) % 2 == 0 -- метки смерти мигают ~1.5 раза в секунду
+        -- плавная пульсация 0.4..1.0 (период около 2.6 секунды) для меток смерти и меток других пользователей
+        local pulse = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(tick() * 2.4))
 
         local toRemove = {}
 
-        for _, m in ipairs(entry.marks) do
+        for _, m in ipairs(marksList) do
             local v = Rendered[m.id]
             if v then
                 local pos = Vector3.new(m.x, m.y, m.z)
@@ -3563,7 +3671,7 @@ local function initMarks()
                         v.m3 = create3D(m)
                         apply3DStyle(v.m3, m)
                     end
-                    if m.kind == "death" then set3DBlink(v.m3, blinkOn) end
+                    if m.kind == "death" or m.kind == "peer" then set3DPulse(v.m3, pulse) end
                 elseif dist > MARK_3D_HIDE_RADIUS and v.m3 then
                     destroy3D(v)
                 end
@@ -3637,6 +3745,27 @@ local function initMarks()
         return mark
     end
 
+    -- Отправка метки другим пользователям скрипта (двойное нажатие V сразу после постановки метки)
+    local function shareMark(mark)
+        local gray = Color3.fromRGB(200, 200, 210)
+        if not mark then
+            showToast("Сначала поставь метку (V), потом быстро нажми V ещё раз", gray)
+            return
+        end
+        if not NetSend or not Settings.Network then
+            showToast("Сеть скрипта выключена", gray)
+            return
+        end
+        if mark.shared then
+            showToast("Эта метка уже отправлена", gray)
+            return
+        end
+        mark.shared = true
+        saveMarks()
+        NetSend({ k = "mark", id = mark.id, x = mark.x, y = mark.y, z = mark.z })
+        showToast("Метка отправлена пользователям скрипта", Color3.fromRGB(190, 120, 255))
+    end
+
     local refreshMarksMenu -- объявлена ниже
     local openColorPicker  -- объявлена ниже
 
@@ -3645,6 +3774,9 @@ local function initMarks()
         if not entry then return end
         for i, m in ipairs(entry.marks) do
             if m.id == markId then
+                if m.shared and NetSend then
+                    NetSend({ k = "unmark", id = m.id }) -- убираем метку и у остальных
+                end
                 table.remove(entry.marks, i)
                 break
             end
@@ -3747,7 +3879,7 @@ local function initMarks()
     MenuHint.Position = UDim2.new(0, 8, 1, -26)
     MenuHint.Size = UDim2.new(1, -16, 0, 18)
     MenuHint.BackgroundTransparency = 1
-    MenuHint.Text = "V - метка | зажать V - меню | клик по цвету - палитра"
+    MenuHint.Text = "V метка | 2xV отправить юзерам | зажать V меню | J юзеры"
     MenuHint.TextColor3 = Color3.fromRGB(150, 145, 175)
     MenuHint.Font = Enum.Font.Gotham
     MenuHint.TextSize = 11
@@ -4357,6 +4489,9 @@ local function initMarks()
     local vHeld = false
     local vToken = 0
     local vSuppress = false
+    local lastTapTime = 0
+    local lastMark = nil
+    local MARK_DOUBLE_TAP = 0.3 -- быстрое повторное нажатие V
 
     UserInputService.InputBegan:Connect(function(input)
         if input.KeyCode ~= MARK_KEY then return end
@@ -4367,6 +4502,15 @@ local function initMarks()
         vSuppress = false
         vToken = vToken + 1
         local token = vToken
+
+        -- двойное нажатие: отправить только что поставленную метку пользователям скрипта
+        local now = tick()
+        if now - lastTapTime <= MARK_DOUBLE_TAP then
+            vSuppress = true
+            lastTapTime = 0
+            shareMark(lastMark)
+            return
+        end
 
         -- удержание: открыть меню
         task.delay(MARK_HOLD_TIME, function()
@@ -4383,8 +4527,9 @@ local function initMarks()
         vHeld = false
         if vSuppress then return end
 
-        -- короткое нажатие: ставим метку
-        placeMark()
+        -- короткое нажатие: ставим свою метку (другим она не отправляется, пока не нажать V второй раз)
+        lastMark = placeMark()
+        lastTapTime = tick()
         if MenuPanel.Visible then refreshMarksMenu() end
     end)
 end
@@ -4392,202 +4537,589 @@ end
 initMarks()
 
 -- ==========================================
--- МУЗЫКАЛЬНЫЙ ВИДЖЕТ
--- Показывает, что играет у тебя на компьютере (Spotify, YouTube Music в браузере и т.д.).
--- Roblox сам этого не видит, поэтому данные приходят от маленькой программы media_bridge.py,
--- которая каждую секунду записывает файл RebzyyxHub_music.json в папку workspace экзекутора.
+-- СЕТЬ ПОЛЬЗОВАТЕЛЕЙ СКРИПТА
+-- Каждый клиент скрипта раз в ~25 сек шлёт "я тут" в общий канал своего сервера и читает сигналы остальных.
+-- Так пользователи скрипта видят друг друга (значок в ESP, у создателя ещё "Creator")
+-- и получают метки друг друга (фиолетовые, подпись "От <ник>").
+-- Канал: публичный сервис ntfy.sh (бесплатный, без регистрации), тема = "rbzx-" + JobId сервера.
+-- ВАЖНО: через него идут только твой UserId, ник, версия скрипта и координаты ТВОИХ новых меток (кнопка V).
+-- Выключается кнопкой "Сеть скрипта" в худе.
 -- ==========================================
-local function initMusic()
-    local MusicHttp = game:GetService("HttpService")
-    local MUSIC_FILE = "RebzyyxHub_music.json"
-    local STALE_SECONDS = 8 -- если мост не обновлял файл дольше - считаем, что музыки нет
+local function initNetwork()
+    local NetHttp = game:GetService("HttpService")
+    local RELAY = "https://ntfy.sh/"
+    local POLL_INTERVAL = 5     -- ntfy.sh ограничивает частоту запросов, чаще опрашивать нельзя
+    local HELLO_INTERVAL = 25
+    local PEER_COLOR = { 170, 80, 255 } -- метки пользователей - фиолетовые
 
-    destroyOldGui("RebzyyxMusicGui")
-    local MusicGui = Instance.new("ScreenGui")
-    MusicGui.Name = "RebzyyxMusicGui"
-    MusicGui.ResetOnSpawn = false
-    MusicGui.DisplayOrder = 6
-    MusicGui.Parent = GuiParent
+    -- ---------- аватарка скрипта (встроена в файл) ----------
+    local AVATAR_B64 = [[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]]
+    local AVATAR_FILE = "RebzyyxHub_avatar.png"
 
-    -- CanvasGroup позволяет плавно скрывать всю карточку целиком
-    local card = Instance.new("CanvasGroup")
-    card.Position = UDim2.fromOffset(16, 16)
-    card.Size = UDim2.fromOffset(330, 112)
-    card.BackgroundColor3 = Color3.fromRGB(22, 20, 34)
-    card.BackgroundTransparency = 0.22
-    card.GroupTransparency = 1
-    card.Visible = false
-    card.Parent = MusicGui
-    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 16)
+    local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local function b64decode(data)
+        local out = {}
+        local bits, nbits = 0, 0
+        for i = 1, #data do
+            local c = string.sub(data, i, i)
+            local v = string.find(B64, c, 1, true)
+            if v then
+                bits = bits * 64 + (v - 1)
+                nbits = nbits + 6
+                if nbits >= 8 then
+                    nbits = nbits - 8
+                    local byte = math.floor(bits / 2 ^ nbits)
+                    bits = bits % 2 ^ nbits
+                    out[#out + 1] = string.char(byte)
+                end
+            end
+        end
+        return table.concat(out)
+    end
+
+    pcall(function()
+        local getAsset = getcustomasset or getsynasset
+        if writefile and getAsset then
+            writefile(AVATAR_FILE, b64decode(AVATAR_B64))
+            ScriptAvatarAsset = getAsset(AVATAR_FILE)
+        end
+    end)
+
+    -- ---------- создатель скрипта: ник -> UserId ----------
+    if CREATOR_USER_ID == 0 and CREATOR_USERNAME ~= "" then
+        task.spawn(function()
+            local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(CREATOR_USERNAME) end)
+            if ok and type(id) == "number" then CREATOR_USER_ID = id end
+        end)
+    end
+
+    -- ---------- HTTP ----------
+    local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+        or (fluxus and fluxus.request)
+    if not httpRequest then
+        warn("[Rebzyyx] Сеть скрипта недоступна: экзекутор не поддерживает HTTP-запросы (request)")
+        return
+    end
+    if game.JobId == "" then
+        warn("[Rebzyyx] Сеть скрипта отключена: у сервера нет JobId (Studio/приватный тест)")
+        return
+    end
+
+    local TOPIC = "rbzx-" .. game.JobId
+    local myId = LocalPlayer.UserId
+
+    local function publish(tbl)
+        local ok, body = pcall(function() return NetHttp:JSONEncode(tbl) end)
+        if not ok then return end
+        pcall(function()
+            httpRequest({
+                Url = RELAY .. TOPIC,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "text/plain" },
+                Body = body,
+            })
+        end)
+    end
+
+    -- очередь отправки: не чаще одного сообщения в 1.2 сек
+    local queue = {}
+    NetSend = function(msg)
+        if not Settings.Network then return end
+        msg.u = myId
+        msg.n = LocalPlayer.Name
+        msg.v = SCRIPT_VERSION
+        table.insert(queue, msg)
+    end
+    task.spawn(function()
+        while true do
+            task.wait(1.2)
+            local msg = table.remove(queue, 1)
+            if msg then publish(msg) end
+        end
+    end)
+
+    -- ---------- разбор входящих сообщений ----------
+    local function handleMessage(msg)
+        if type(msg) ~= "table" or type(msg.u) ~= "number" or msg.u == myId then return end
+        local player = Players:GetPlayerByUserId(msg.u)
+        if not player then return end -- пользователь уже не на сервере
+
+        -- любое сообщение = "пользователь скрипта тут"
+        ScriptUsers[msg.u] = { seen = os.clock(), name = tostring(msg.n or player.Name) }
+
+        if msg.k == "mark" and type(msg.id) == "string"
+            and type(msg.x) == "number" and type(msg.y) == "number" and type(msg.z) == "number" then
+            local id = "p_" .. msg.u .. "_" .. msg.id
+            PeerMarks[id] = {
+                id = id, x = msg.x, y = msg.y, z = msg.z,
+                kind = "peer",
+                color = { PEER_COLOR[1], PEER_COLOR[2], PEER_COLOR[3] },
+                name = "От " .. player.Name, -- без своих названий: только "От" и ник
+                creator = player.Name,
+                owner = msg.u,
+            }
+            PeerState.version = PeerState.version + 1
+        elseif msg.k == "unmark" and type(msg.id) == "string" then
+            local id = "p_" .. msg.u .. "_" .. msg.id
+            if PeerMarks[id] then
+                PeerMarks[id] = nil
+                PeerState.version = PeerState.version + 1
+            end
+        end
+    end
+
+    -- ---------- опрос канала ----------
+    local since = "6h" -- при заходе читаем историю сервера, чтобы увидеть уже поставленные метки
+    local backoff = 0
+    task.spawn(function()
+        while true do
+            task.wait(POLL_INTERVAL + backoff)
+            if Settings.Network then
+                local ok, res = pcall(function()
+                    return httpRequest({
+                        Url = RELAY .. TOPIC .. "/json?poll=1&since=" .. since,
+                        Method = "GET",
+                    })
+                end)
+                if ok and res and (res.StatusCode == 200 or res.Success) and type(res.Body) == "string" then
+                    backoff = 0
+                    for line in string.gmatch(res.Body, "[^\r\n]+") do
+                        local okLine, event = pcall(function() return NetHttp:JSONDecode(line) end)
+                        if okLine and type(event) == "table" and event.event == "message" then
+                            if type(event.id) == "string" then since = event.id end
+                            local okMsg, msg = pcall(function() return NetHttp:JSONDecode(tostring(event.message)) end)
+                            if okMsg then handleMessage(msg) end
+                        end
+                    end
+                else
+                    backoff = math.min(backoff + 10, 60) -- сервис недоступен/лимит: пауза
+                end
+            end
+        end
+    end)
+
+    -- ---------- "я тут" ----------
+    task.spawn(function()
+        task.wait(2)
+        while true do
+            if Settings.Network then NetSend({ k = "hi" }) end
+            task.wait(HELLO_INTERVAL)
+        end
+    end)
+
+    -- чужие метки пропадают, когда игрок вышел
+    Players.PlayerRemoving:Connect(function(pl)
+        ScriptUsers[pl.UserId] = nil
+        local changed = false
+        for id, m in pairs(PeerMarks) do
+            if m.owner == pl.UserId then
+                PeerMarks[id] = nil
+                changed = true
+            end
+        end
+        if changed then PeerState.version = PeerState.version + 1 end
+    end)
+
+    -- при выключении сети убираем чужие метки и значки
+    task.spawn(function()
+        local wasOn = Settings.Network
+        while true do
+            task.wait(1)
+            if wasOn and not Settings.Network then
+                wasOn = false
+                ScriptUsers = {}
+                PeerMarks = {}
+                PeerState.version = PeerState.version + 1
+            elseif not wasOn and Settings.Network then
+                wasOn = true
+            end
+        end
+    end)
+
+    print("[Rebzyyx] Сеть скрипта: канал " .. TOPIC)
+end
+
+initNetwork()
+
+-- ==========================================
+-- СПИСОК ПОЛЬЗОВАТЕЛЕЙ СКРИПТА (клавиша J)
+-- ==========================================
+local function initUsersList()
+    local USERS_KEY = Enum.KeyCode.J
+
+    destroyOldGui("RebzyyxUsersGui")
+    local UsersGui = Instance.new("ScreenGui")
+    UsersGui.Name = "RebzyyxUsersGui"
+    UsersGui.ResetOnSpawn = false
+    UsersGui.DisplayOrder = 7
+    UsersGui.Parent = GuiParent
+
+    local panel = Instance.new("Frame")
+    panel.AnchorPoint = Vector2.new(0, 0.5)
+    panel.Position = UDim2.new(0, 20, 0.5, 0)
+    panel.Size = UDim2.fromOffset(300, 340)
+    panel.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
+    panel.BackgroundTransparency = 0.28
+    panel.Visible = false
+    panel.Parent = UsersGui
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
     do
         local st = Instance.new("UIStroke")
         st.Color = Color3.fromRGB(215, 205, 240)
-        st.Transparency = 0.5
-        st.Thickness = 1.2
+        st.Transparency = 0.35
+        st.Thickness = 1.5
         st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        st.Parent = card
+        st.Parent = panel
     end
 
-    local cover = Instance.new("ImageLabel")
-    cover.Position = UDim2.fromOffset(10, 10)
-    cover.Size = UDim2.fromOffset(54, 54)
-    cover.BackgroundColor3 = Color3.fromRGB(50, 46, 72)
-    cover.BorderSizePixel = 0
-    cover.ScaleType = Enum.ScaleType.Crop
-    cover.Parent = card
-    Instance.new("UICorner", cover).CornerRadius = UDim.new(0, 9)
+    local header = Instance.new("TextLabel")
+    header.Position = UDim2.fromOffset(8, 8)
+    header.Size = UDim2.new(1, -16, 0, 28)
+    header.BackgroundColor3 = Color3.fromRGB(38, 35, 58)
+    header.BackgroundTransparency = 0.35
+    header.TextColor3 = Color3.fromRGB(255, 255, 255)
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 14
+    header.Parent = panel
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+    glassRim(header, 0.6)
 
-    local coverNote = Instance.new("TextLabel")
-    coverNote.Size = UDim2.fromScale(1, 1)
-    coverNote.BackgroundTransparency = 1
-    coverNote.Text = "♪"
-    coverNote.TextColor3 = Color3.fromRGB(200, 195, 225)
-    coverNote.Font = Enum.Font.GothamBold
-    coverNote.TextSize = 24
-    coverNote.Parent = cover
-
-    local function makeText(x, y, w, h, size, bold, color)
-        local t = Instance.new("TextLabel")
-        t.Position = UDim2.fromOffset(x, y)
-        t.Size = UDim2.fromOffset(w, h)
-        t.BackgroundTransparency = 1
-        t.Text = ""
-        t.TextColor3 = color
-        t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-        t.TextSize = size
-        t.TextXAlignment = Enum.TextXAlignment.Left
-        t.TextTruncate = Enum.TextTruncate.AtEnd
-        t.Parent = card
-        return t
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Position = UDim2.fromOffset(8, 44)
+    scroll.Size = UDim2.new(1, -16, 1, -74)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.CanvasSize = UDim2.new()
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.Parent = panel
+    do
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 4)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Parent = scroll
     end
 
-    local titleLabel = makeText(74, 12, 246, 20, 15, true, Color3.fromRGB(255, 255, 255))
-    local subLabel = makeText(74, 34, 246, 16, 12, false, Color3.fromRGB(170, 165, 190))
-    local albumLabel = makeText(10, 68, 310, 16, 13, true, Color3.fromRGB(240, 240, 248))
+    local hint = Instance.new("TextLabel")
+    hint.Position = UDim2.new(0, 8, 1, -26)
+    hint.Size = UDim2.new(1, -16, 0, 18)
+    hint.BackgroundTransparency = 1
+    hint.Text = "J - закрыть"
+    hint.TextColor3 = Color3.fromRGB(150, 145, 175)
+    hint.Font = Enum.Font.Gotham
+    hint.TextSize = 11
+    hint.Parent = panel
 
-    local elapsedLabel = makeText(10, 90, 40, 14, 11, false, Color3.fromRGB(200, 195, 225))
-    local remainLabel = makeText(280, 90, 40, 14, 11, false, Color3.fromRGB(200, 195, 225))
-    remainLabel.TextXAlignment = Enum.TextXAlignment.Right
+    local rows = {}      -- [userId] = { frame, distLabel }
+    local lastSignature = ""
 
-    local barBg = Instance.new("Frame")
-    barBg.Position = UDim2.fromOffset(52, 95)
-    barBg.Size = UDim2.fromOffset(226, 4)
-    barBg.BackgroundColor3 = Color3.fromRGB(90, 85, 115)
-    barBg.BorderSizePixel = 0
-    barBg.Parent = card
-    Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+    local function collectUsers()
+        local list = {}
+        local myId = LocalPlayer.UserId
+        local seenIds = {}
 
-    local barFill = Instance.new("Frame")
-    barFill.Size = UDim2.fromScale(0, 1)
-    barFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    barFill.BorderSizePixel = 0
-    barFill.Parent = barBg
-    Instance.new("UICorner", barFill).CornerRadius = UDim.new(1, 0)
+        local function add(id, player, isSelf)
+            if seenIds[id] then return end
+            seenIds[id] = true
+            table.insert(list, {
+                id = id, player = player, self = isSelf,
+                creator = (CREATOR_USER_ID ~= 0 and id == CREATOR_USER_ID),
+            })
+        end
 
-    local knob = Instance.new("Frame")
-    knob.AnchorPoint = Vector2.new(0.5, 0.5)
-    knob.Position = UDim2.fromScale(0, 0.5)
-    knob.Size = UDim2.fromOffset(8, 8)
-    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    knob.BorderSizePixel = 0
-    knob.Parent = barBg
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-
-    local function fmtTime(sec)
-        sec = math.max(0, math.floor(sec))
-        return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
-    end
-
-    local data = nil
-    local readAt = 0
-    local lastStamp = nil
-    local lastRead = 0
-    local currentCover = nil
-    local shown = false
-
-    local function readMusic()
-        local ok, raw = pcall(function()
-            if isfile and readfile and isfile(MUSIC_FILE) then
-                return readfile(MUSIC_FILE)
+        add(myId, LocalPlayer, true)
+        for userId, info in pairs(ScriptUsers) do
+            if os.clock() - info.seen < 80 then
+                local pl = Players:GetPlayerByUserId(userId)
+                if pl then add(userId, pl, false) end
             end
+        end
+        -- создатель показывается, пока он на сервере
+        if CREATOR_USER_ID ~= 0 then
+            local pl = Players:GetPlayerByUserId(CREATOR_USER_ID)
+            if pl then add(CREATOR_USER_ID, pl, pl == LocalPlayer) end
+        end
+
+        table.sort(list, function(a, b)
+            if a.self ~= b.self then return a.self end
+            if a.creator ~= b.creator then return a.creator end
+            return a.player.Name:lower() < b.player.Name:lower()
         end)
-        if not ok or type(raw) ~= "string" or raw == "" then
-            data = nil
-            return
-        end
-        local okJson, decoded = pcall(function() return MusicHttp:JSONDecode(raw) end)
-        if not okJson or type(decoded) ~= "table" then return end -- файл мог быть записан не до конца
-        if decoded.updated ~= lastStamp then
-            lastStamp = decoded.updated
-            readAt = tick()
-        end
-        data = decoded
+        return list
     end
 
-    local function setCover(fileName)
-        if fileName == currentCover then return end
-        currentCover = fileName
-        cover.Image = ""
-        coverNote.Visible = true
-        if not fileName then return end
-        pcall(function()
-            local getAsset = getcustomasset or getsynasset
-            if getAsset and isfile and isfile(fileName) then
-                cover.Image = getAsset(fileName)
-                coverNote.Visible = false
+    local function rebuild(list)
+        for _, r in pairs(rows) do r.frame:Destroy() end
+        rows = {}
+        for i, u in ipairs(list) do
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, -4, 0, 38)
+            frame.LayoutOrder = i
+            frame.BackgroundColor3 = u.creator and Color3.fromRGB(60, 38, 100) or Color3.fromRGB(38, 35, 58)
+            frame.BackgroundTransparency = 0.4
+            frame.Parent = scroll
+            Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+            glassRim(frame, 0.65)
+
+            local icon = Instance.new("ImageLabel")
+            icon.Position = UDim2.fromOffset(7, 8)
+            icon.Size = UDim2.fromOffset(22, 22)
+            icon.BackgroundColor3 = Color3.fromRGB(150, 90, 240)
+            icon.BorderSizePixel = 0
+            icon.Parent = frame
+            Instance.new("UICorner", icon).CornerRadius = UDim.new(1, 0)
+            if ScriptAvatarAsset then
+                icon.Image = ScriptAvatarAsset
+                icon.BackgroundTransparency = 1
             end
-        end)
+
+            local name = Instance.new("TextLabel")
+            name.Position = UDim2.fromOffset(38, 3)
+            name.Size = UDim2.new(1, -118, 0, 18)
+            name.BackgroundTransparency = 1
+            name.Text = (u.self and "Вы: " or "") .. u.player.DisplayName .. " (@" .. u.player.Name .. ")"
+            name.TextColor3 = Color3.fromRGB(255, 255, 255)
+            name.Font = Enum.Font.GothamBold
+            name.TextSize = 12
+            name.TextXAlignment = Enum.TextXAlignment.Left
+            name.TextTruncate = Enum.TextTruncate.AtEnd
+            name.Parent = frame
+
+            local sub = Instance.new("TextLabel")
+            sub.Position = UDim2.fromOffset(38, 20)
+            sub.Size = UDim2.new(1, -118, 0, 14)
+            sub.BackgroundTransparency = 1
+            sub.Text = u.creator and "Creator" or "пользователь скрипта"
+            sub.TextColor3 = u.creator and Color3.fromRGB(200, 150, 255) or Color3.fromRGB(150, 145, 175)
+            sub.Font = u.creator and Enum.Font.GothamBold or Enum.Font.Gotham
+            sub.TextSize = 11
+            sub.TextXAlignment = Enum.TextXAlignment.Left
+            sub.Parent = frame
+
+            local dist = Instance.new("TextLabel")
+            dist.Position = UDim2.new(1, -78, 0, 0)
+            dist.Size = UDim2.fromOffset(72, 38)
+            dist.BackgroundTransparency = 1
+            dist.Text = "-"
+            dist.TextColor3 = Color3.fromRGB(225, 225, 235)
+            dist.Font = Enum.Font.Gotham
+            dist.TextSize = 11
+            dist.TextXAlignment = Enum.TextXAlignment.Right
+            dist.Parent = frame
+
+            rows[u.id] = { frame = frame, distLabel = dist, player = u.player, self = u.self }
+        end
     end
 
-    local function musicStep()
-        local now = tick()
-        if now - lastRead >= 0.5 then
-            lastRead = now
-            if Settings.MusicWidget then readMusic() else data = nil end
-        end
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if panel.Visible then
+                local list = collectUsers()
+                local ids = {}
+                for _, u in ipairs(list) do table.insert(ids, tostring(u.id) .. (u.creator and "c" or "")) end
+                local signature = table.concat(ids, ",")
+                if signature ~= lastSignature then
+                    lastSignature = signature
+                    rebuild(list)
+                end
+                header.Text = "Юзеры скрипта: " .. #list
 
-        local active = Settings.MusicWidget and data ~= nil
-            and data.playing == true
-            and tostring(data.title or "") ~= ""
-            and math.abs(os.time() - (tonumber(data.updated) or 0)) <= STALE_SECONDS
-
-        if active ~= shown then
-            shown = active
-            if active then card.Visible = true end
-            TweenService:Create(card, TweenInfo.new(0.3), { GroupTransparency = active and 0 or 1 }):Play()
-            if not active then
-                task.delay(0.35, function()
-                    if not shown then card.Visible = false end
-                end)
+                local myChar = LocalPlayer.Character
+                local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
+                for _, r in pairs(rows) do
+                    if r.self then
+                        r.distLabel.Text = "это ты"
+                    else
+                        local char = r.player.Character
+                        local part = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+                        if part and myRoot then
+                            r.distLabel.Text = math.floor((part.Position - myRoot.Position).Magnitude + 0.5) .. " studs"
+                        else
+                            r.distLabel.Text = "-"
+                        end
+                    end
+                end
             end
         end
-        if not active then return end
+    end)
 
-        titleLabel.Text = tostring(data.title or "")
-        local artist = tostring(data.artist or "")
-        local app = tostring(data.app or "")
-        subLabel.Text = (artist ~= "" and app ~= "") and (artist .. " - " .. app) or (artist .. app)
-        albumLabel.Text = tostring(data.album or "")
-        setCover(type(data.cover) == "string" and data.cover or nil)
-
-        -- позиция: между обновлениями файла добавляем прошедшее время
-        local duration = tonumber(data.duration) or 0
-        local position = (tonumber(data.position) or 0) + (now - readAt)
-        if duration > 0 then position = math.min(position, duration) end
-        local ratio = duration > 0 and math.clamp(position / duration, 0, 1) or 0
-
-        barFill.Size = UDim2.fromScale(ratio, 1)
-        knob.Position = UDim2.fromScale(ratio, 0.5)
-        elapsedLabel.Text = fmtTime(position)
-        remainLabel.Text = duration > 0 and ("-" .. fmtTime(duration - position)) or ""
-    end
-
-    RunService.RenderStepped:Connect(function()
-        safeStep("Музыка", musicStep)
+    UserInputService.InputBegan:Connect(function(input)
+        if input.KeyCode ~= USERS_KEY then return end
+        if HudKeyListening or Freecam.Listening or UserInputService:GetFocusedTextBox() then return end
+        panel.Visible = not panel.Visible
+        lastSignature = "" -- при открытии пересобираем список
     end)
 end
 
-initMusic()
+initUsersList()
+
+-- ==========================================
+-- НОЧНОЕ ЗРЕНИЕ
+-- Когда вокруг персонажа темно (замкнутое помещение / ночь и рядом нет света), яркость плавно
+-- повышается, чтобы нормально видеть в тёмных местах. Когда светлеет - плавно возвращается.
+-- Скрипт не может измерить свет "по пикселям", поэтому тьма определяется по признакам:
+--   * над тобой потолок и/или вокруг (в радиусе 5 студов) стены = помещение/пещера;
+--   * ночное время суток (Lighting.ClockTime);
+--   * рядом нет включённых источников света (лампы, фонари).
+-- ==========================================
+local function initNightVision()
+    local Lighting = game:GetService("Lighting")
+
+    local NV_RADIUS = 5             -- радиус проверки стен вокруг персонажа (студов)
+    local NV_CHECK_INTERVAL = 0.2   -- как часто проверять темноту (сек)
+    local NV_RISE = 1.2             -- скорость включения (1 / сек) - около секунды плавного перехода
+    local NV_FALL = 0.7             -- скорость выключения
+    local NV_AT_NIGHT = true        -- считать тёмным и ночное время на улице
+    local NV_AMBIENT = Color3.fromRGB(105, 112, 130)
+    local NV_EXPOSURE = 0.9         -- добавка к экспозиции
+    local NV_LIGHT_SEARCH = 45      -- где искать включённые лампы рядом (студов)
+
+    -- эффект яркости (мягкий подъём тёмных участков)
+    local old = Lighting:FindFirstChild("RebzyyxNightVision")
+    if old then old:Destroy() end
+    local cc = Instance.new("ColorCorrectionEffect")
+    cc.Name = "RebzyyxNightVision"
+    cc.Brightness = 0
+    cc.Contrast = 0
+    cc.Enabled = false
+    cc.Parent = Lighting
+
+    -- Запоминаем "родные" значения освещения игры. Если игра сама их меняет (смена дня и ночи),
+    -- подхватываем её значения, а не затираем их.
+    local base = {
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        Exposure = Lighting.ExposureCompensation,
+    }
+    local written = {}
+    local function track(prop, key)
+        Lighting:GetPropertyChangedSignal(prop):Connect(function()
+            if written[key] == nil or Lighting[prop] ~= written[key] then
+                base[key] = Lighting[prop]
+            end
+        end)
+    end
+    track("Ambient", "Ambient")
+    track("OutdoorAmbient", "OutdoorAmbient")
+    track("ExposureCompensation", "Exposure")
+
+    local function lift(baseColor, target, f)
+        -- поднимаем цвет к целевому только если он темнее (никогда не затемняем)
+        return Color3.new(
+            baseColor.R + math.max(0, target.R - baseColor.R) * f,
+            baseColor.G + math.max(0, target.G - baseColor.G) * f,
+            baseColor.B + math.max(0, target.B - baseColor.B) * f
+        )
+    end
+
+    local active = false
+    local function applyNightVision(f)
+        if f > 0.003 then
+            active = true
+            local amb = lift(base.Ambient, NV_AMBIENT, f)
+            local outdoor = lift(base.OutdoorAmbient, NV_AMBIENT, f)
+            local exposure = base.Exposure + NV_EXPOSURE * f
+            written.Ambient, written.OutdoorAmbient, written.Exposure = amb, outdoor, exposure
+            Lighting.Ambient = amb
+            Lighting.OutdoorAmbient = outdoor
+            Lighting.ExposureCompensation = exposure
+            cc.Brightness = 0.06 * f
+            cc.Contrast = 0.03 * f
+            cc.Enabled = true
+        elseif active then
+            active = false
+            written.Ambient, written.OutdoorAmbient, written.Exposure = base.Ambient, base.OutdoorAmbient, base.Exposure
+            Lighting.Ambient = base.Ambient
+            Lighting.OutdoorAmbient = base.OutdoorAmbient
+            Lighting.ExposureCompensation = base.Exposure
+            cc.Enabled = false
+        end
+    end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    overlapParams.MaxParts = 200
+
+    local function refreshFilters(char)
+        local ignore = {}
+        if char then table.insert(ignore, char) end
+        local cam = Workspace.CurrentCamera
+        if cam then table.insert(ignore, cam) end
+        local marks = Workspace:FindFirstChild("RebzyyxMarks3D") -- свет наших меток не считается освещением
+        if marks then table.insert(ignore, marks) end
+        rayParams.FilterDescendantsInstances = ignore
+        overlapParams.FilterDescendantsInstances = ignore
+    end
+
+    local function hasNearbyLight(pos)
+        local parts = Workspace:GetPartBoundsInRadius(pos, NV_LIGHT_SEARCH, overlapParams)
+        for _, part in ipairs(parts) do
+            for _, child in ipairs(part:GetChildren()) do
+                if child:IsA("Light") and child.Enabled and child.Brightness > 0.1 then
+                    if (part.Position - pos).Magnitude <= child.Range + 2 then
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    local function isEnclosed(origin)
+        local up = Workspace:Raycast(origin, Vector3.new(0, 120, 0), rayParams)
+        if not up then return false end -- над головой небо
+
+        local roofDist = (up.Position - origin).Magnitude
+        local blocked = 0
+        for i = 0, 7 do
+            local ang = i * math.pi / 4
+            local dir = Vector3.new(math.cos(ang), 0, math.sin(ang)) * NV_RADIUS
+            if Workspace:Raycast(origin, dir, rayParams) then
+                blocked = blocked + 1
+            end
+        end
+        -- замкнутое место: низкий потолок, либо потолок + стены рядом
+        return roofDist <= 12 or blocked >= 2
+    end
+
+    local function computeTarget()
+        if not Settings.NightVision then return 0 end
+        local char = LocalPlayer.Character
+        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then return 0 end
+
+        refreshFilters(char)
+        local origin = root.Position + Vector3.new(0, 1.5, 0)
+
+        local clock = Lighting.ClockTime
+        local night = NV_AT_NIGHT and (clock >= 19 or clock < 5.5)
+        local dark = night or isEnclosed(origin)
+        if not dark then return 0 end
+
+        if hasNearbyLight(root.Position) then return 0 end -- рядом горит лампа - и так светло
+        return 1
+    end
+
+    local f, target, timer = 0, 0, 0
+    RunService.RenderStepped:Connect(function(dt)
+        safeStep("Ночное зрение", function()
+            timer = timer + dt
+            if timer >= NV_CHECK_INTERVAL then
+                timer = 0
+                target = computeTarget()
+            end
+            local rate = (target > f) and NV_RISE or NV_FALL
+            f = f + math.clamp(target - f, -rate * dt, rate * dt)
+            applyNightVision(f)
+        end)
+    end)
+end
+
+initNightVision()
 
 -- ==========================================
 -- СМЕРТЬ / РЕСПАВН: сбрасываем состояние, перепривязываем наводку, восстанавливаем указатели
