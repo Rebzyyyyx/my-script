@@ -914,7 +914,7 @@ local function isVisible(targetPart)
             return true
         end
         local hit = result.Instance
-        if hit and hit:IsA("BasePart") and (hit.Transparency >= 0.9 or not hit.CanCollide) then
+        if hit and hit:IsA("BasePart") and hit.Transparency >= 0.9 then
             table.insert(ignore, hit)
             origin = result.Position
         else
@@ -5199,6 +5199,7 @@ local function initUsersList()
 
     UserInputService.InputBegan:Connect(function(input)
         if input.KeyCode ~= USERS_KEY then return end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then return end -- Shift+J - это панель создателя
         if HudKeyListening or Freecam.Listening or UserInputService:GetFocusedTextBox() then return end
         panel.Visible = not panel.Visible
         lastSignature = "" -- при открытии пересобираем список
@@ -5312,8 +5313,10 @@ local function initDarkLights()
     -- оценка общего уровня освещения сцены (0 - кромешная тьма, 1 - яркий день), не зависит от того,
     -- каким способом игра анимирует смену дня и ночи (ClockTime или напрямую Brightness/Ambient)
     local function sceneLightLevel()
-        local function v(c) local _, _, val = c:ToHSV() return val end
-        local ambient = (v(Lighting.Ambient) + v(Lighting.OutdoorAmbient)) * 0.5
+        -- перцептивная яркость: синий канал почти не влияет, иначе насыщенный "ночной синий" (высокий HSV value)
+        -- ошибочно считался бы светлым, хотя сцена явно тёмная
+        local function luma(c) return c.R * 0.3 + c.G * 0.59 + c.B * 0.11 end
+        local ambient = (luma(Lighting.Ambient) + luma(Lighting.OutdoorAmbient)) * 0.5
         local sun = math.clamp(Lighting.Brightness / 2, 0, 1) -- Brightness около 2 в ясный полдень
         return math.clamp(ambient * 0.6 + sun * 0.4, 0, 1)
     end
@@ -6000,6 +6003,8 @@ end
 -- ==========================================
 do
     local NpcVisual = {} -- [Model] = { hl, gui, nameLbl, distLbl }
+    local NPC_ESP_RANGE = 300 -- подсветка и имя НПС показываются только ближе этой дистанции (студов)
+    local NPC_ESP_HYSTERESIS = 25 -- запас у границы, чтобы не мигало
 
     local function createNpcVisual(model)
         local hl = Instance.new("Highlight")
@@ -6069,19 +6074,22 @@ do
 
         local alive = {}
         for _, model in ipairs(liveNpcList()) do
-            alive[model] = true
-            local v = NpcVisual[model]
-            if not v or not v.hl.Parent then
-                if v then destroyNpcVisual(v) end
-                v = createNpcVisual(model)
-                NpcVisual[model] = v
-            end
-
             local hum = model:FindFirstChildOfClass("Humanoid")
             local part = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
             if hum and part and myRoot then
                 local dist = (part.Position - myRoot.Position).Magnitude
-                v.distLbl.Text = math.floor(dist + 0.5) .. " studs | HP " .. math.ceil(hum.Health)
+                local v = NpcVisual[model]
+
+                -- создаём подсветку и имя только в радиусе 300 студов; уже созданные держим чуть дальше (гистерезис)
+                if dist <= NPC_ESP_RANGE or (v and dist <= NPC_ESP_RANGE + NPC_ESP_HYSTERESIS) then
+                    alive[model] = true
+                    if not v or not v.hl.Parent then
+                        if v then destroyNpcVisual(v) end
+                        v = createNpcVisual(model)
+                        NpcVisual[model] = v
+                    end
+                    v.distLbl.Text = math.floor(dist + 0.5) .. " studs | HP " .. math.ceil(hum.Health)
+                end
             end
         end
 
