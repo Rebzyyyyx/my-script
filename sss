@@ -28,7 +28,8 @@ local Settings = {
     DeathMarks = true, -- автоматическая метка в месте смерти
     Network = true, -- общий канал пользователей скрипта: значки в ESP и общие метки
     LightRadius = 350, -- радиус света в тёмных местах (0 = выкл; 200 / 350 / 400)
-    TriggerBot = false, -- авто-выстрел, когда аимбот навёлся на игрока
+    TriggerBotKey = Enum.KeyCode.Unknown, -- клавиша TriggerBot (пока не задана кнопкой в худе - сам не стреляет)
+    TrailEnabled = false, -- трейл за персонажем (косметика)
     HitSound = true, -- звук при попадании по игроку
     NpcEnabled = true, -- ESP и аимбот также работают по НПС
     LodDistance = 1300, -- оптимизация: дальше этой дистанции графика упрощается (0 = выключено)
@@ -1460,7 +1461,7 @@ end
 Settings.HudKey = loadHudKey() or Settings.HudKey
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 230, 0, 806)
+MainFrame.Size = UDim2.new(0, 230, 0, 862)
 MainFrame.Position = UDim2.new(0.05, 0, 0.15, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
 MainFrame.BackgroundTransparency = 0.32
@@ -1533,6 +1534,30 @@ local function applyGlassHover(btn, normalTransparency)
     btn.MouseLeave:Connect(function()
         TweenService:Create(btn, TweenInfo.new(0.2), { BackgroundTransparency = normalTransparency }):Play()
     end)
+end
+
+-- Плавное открытие/закрытие панелей (главный худ, меню меток, панель создателя, список юзеров и т.д.).
+-- Я не смог открыть присланные ссылки на TikTok (нет доступа к видео оттуда), поэтому сделал похожую
+-- по ощущениям плавную анимацию "выезд с лёгким пружинным отскоком" своими силами - если это не то,
+-- опиши словами, что именно должно отличаться, и я подправлю.
+-- Стартовое уведомление (лава-лампа) не трогал - как просил.
+local function animatePanelToggle(frame, opening)
+    local scale = frame:FindFirstChildOfClass("UIScale")
+    if not scale then
+        scale = Instance.new("UIScale")
+        scale.Parent = frame
+    end
+    if opening then
+        frame.Visible = true
+        scale.Scale = 0.82
+        TweenService:Create(scale, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+    else
+        local tw = TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0.82 })
+        tw.Completed:Connect(function()
+            if scale.Scale < 0.9 then frame.Visible = false end
+        end)
+        tw:Play()
+    end
 end
 
 local ParticleLayer = Instance.new("Folder")
@@ -1814,7 +1839,25 @@ do
         btn.Text = lightLabel()
     end)
 end
-createToggleButton("TriggerBot", 25, Settings.TriggerBot, function(v) Settings.TriggerBot = v end)
+do
+    local triggerListening = false
+    local btn = createActionEnumButton(25, "Бинд TriggerBot: не задан", function() end)
+    local function label()
+        return "Бинд TriggerBot: " .. (Settings.TriggerBotKey == Enum.KeyCode.Unknown and "не задан" or Settings.TriggerBotKey.Name)
+    end
+    btn.Text = label()
+    btn.MouseButton1Click:Connect(function()
+        triggerListening = true
+        btn.Text = "Нажми клавишу... (Esc - сброс бинда)"
+    end)
+    UserInputService.InputBegan:Connect(function(input)
+        if not triggerListening then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode == Enum.KeyCode.Unknown then return end
+        triggerListening = false
+        Settings.TriggerBotKey = (input.KeyCode == Enum.KeyCode.Escape) and Enum.KeyCode.Unknown or input.KeyCode
+        btn.Text = label()
+    end)
+end
 createToggleButton("ESP/аим по НПС", 27, Settings.NpcEnabled, function(v) Settings.NpcEnabled = v end)
 createToggleButton("Хитсаунд", 26, Settings.HitSound, function(v) Settings.HitSound = v end)
 
@@ -1874,8 +1917,9 @@ UserInputService.InputBegan:Connect(function(input)
     end
 
     if input.KeyCode == Settings.HudKey and not UserInputService:GetFocusedTextBox() then
-        MainFrame.Visible = not MainFrame.Visible
-        if MainFrame.Visible then
+        local opening = not MainFrame.Visible
+        animatePanelToggle(MainFrame, opening)
+        if opening then
             burstHudParticles(Vector2.new(MainFrame.Size.X.Offset / 2, MainFrame.Size.Y.Offset / 2), Color3.fromRGB(180, 100, 255), 18)
         end
         return
@@ -2952,8 +2996,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if UserInputService:GetFocusedTextBox() then return end
 
     if input.KeyCode == TARGET_LIST_KEY and Settings.HudKey ~= TARGET_LIST_KEY then
-        TargetPanel.Visible = not TargetPanel.Visible
-        if TargetPanel.Visible then refreshTargetList() end
+        local opening = not TargetPanel.Visible
+        animatePanelToggle(TargetPanel, opening)
+        if opening then refreshTargetList() end
     elseif input.UserInputType == Enum.UserInputType.MouseButton3 and not gameProcessed then
         toggleTargetAtCrosshair()
     end
@@ -4572,8 +4617,9 @@ local function initMarks()
     end
 
     local function toggleMarksMenu()
-        MenuPanel.Visible = not MenuPanel.Visible
-        if MenuPanel.Visible then
+        local opening = not MenuPanel.Visible
+        animatePanelToggle(MenuPanel, opening)
+        if opening then
             refreshMarksMenu()
         else
             PickerPanel.Visible = false
@@ -5201,12 +5247,371 @@ local function initUsersList()
         if input.KeyCode ~= USERS_KEY then return end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then return end -- Shift+J - это панель создателя
         if HudKeyListening or Freecam.Listening or UserInputService:GetFocusedTextBox() then return end
-        panel.Visible = not panel.Visible
+        animatePanelToggle(panel, not panel.Visible)
         lastSignature = "" -- при открытии пересобираем список
     end)
 end
 
 initUsersList()
+
+-- ==========================================
+-- "ВИДНО, ЧТО У ДРУГОГО ОТКРЫТ ХУД" (любой худ скрипта у пользователей скрипта рядом с тобой)
+-- При открытии/закрытии главного худа отправляется короткий сигнал по сети; у остальных пользователей
+-- скрипта над головой этого игрока появляется небольшая полупрозрачная панель, если он в радиусе ~20 студов.
+-- Best-effort: зависит от сети (ntfy.sh) - сигнал может прийти с задержкой или потеряться.
+-- ==========================================
+do
+    local PeerHud = {} -- [UserId] = { open = bool, at = tick() }
+    local PRESENCE_RANGE = 20
+    local STALE_SECONDS = 90
+
+    local function onPresenceMessage(msg)
+        if type(msg) ~= "table" or msg.k ~= "hud" or type(msg.u) ~= "number" then return end
+        PeerHud[msg.u] = { open = msg.open == true, at = tick() }
+    end
+    local prevHandler = NetOnMessage
+    NetOnMessage = function(msg)
+        if prevHandler then prevHandler(msg) end
+        onPresenceMessage(msg)
+    end
+
+    MainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+        if NetSend and Settings.Network then
+            NetSend({ k = "hud", open = MainFrame.Visible })
+        end
+    end)
+
+    destroyOldGui("RebzyyxPresenceGui")
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "RebzyyxPresenceGui"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 6
+    gui.Parent = GuiParent
+
+    local Badges = {} -- [Player] = { bg, img, label }
+
+    local function makeBadge(player)
+        local bg = Instance.new("BillboardGui")
+        bg.Name = "RebzyyxPresenceBadge"
+        bg.Size = UDim2.fromOffset(84, 30)
+        bg.StudsOffset = Vector3.new(0, 3.1, 0)
+        bg.AlwaysOnTop = true
+        bg.Adornee = nil
+        bg.Parent = gui
+
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.fromScale(1, 1)
+        frame.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
+        frame.BackgroundTransparency = 1
+        frame.Parent = bg
+        Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(200, 170, 255)
+        st.Transparency = 1
+        st.Thickness = 1.2
+        st.Parent = frame
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = "🖥 худ открыт"
+        label.TextColor3 = Color3.fromRGB(230, 210, 255)
+        label.TextTransparency = 1
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = 12
+        label.Parent = frame
+
+        return { bg = bg, frame = frame, stroke = st, label = label, shown = false }
+    end
+
+    local function setShown(badge, shown)
+        if badge.shown == shown then return end
+        badge.shown = shown
+        local a = shown and 0.5 or 1
+        TweenService:Create(badge.frame, TweenInfo.new(0.25), { BackgroundTransparency = a }):Play()
+        TweenService:Create(badge.stroke, TweenInfo.new(0.25), { Transparency = shown and 0.3 or 1 }):Play()
+        TweenService:Create(badge.label, TweenInfo.new(0.25), { TextTransparency = shown and 0 or 1 }):Play()
+    end
+
+    RunService.Heartbeat:Connect(function()
+        safeStep("Индикатор худа", function()
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
+            if not myRoot then return end
+
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local peer = PeerHud[player.UserId]
+                    local head = player.Character:FindFirstChild("Head")
+                    local root = player.Character:FindFirstChild("HumanoidRootPart")
+
+                    if peer and peer.open and head and root and (tick() - peer.at) < STALE_SECONDS
+                        and (root.Position - myRoot.Position).Magnitude <= PRESENCE_RANGE then
+                        local badge = Badges[player]
+                        if not badge then
+                            badge = makeBadge(player)
+                            Badges[player] = badge
+                        end
+                        badge.bg.Adornee = head
+                        setShown(badge, true)
+                    elseif Badges[player] then
+                        setShown(Badges[player], false)
+                    end
+                end
+            end
+        end)
+    end)
+
+    Players.PlayerRemoving:Connect(function(pl)
+        PeerHud[pl.UserId] = nil
+        if Badges[pl] then
+            Badges[pl].bg:Destroy()
+            Badges[pl] = nil
+        end
+    end)
+end
+
+-- ==========================================
+-- ТРЕЙЛ ЗА ПЕРСОНАЖЕМ (косметика) + выбор цвета в худе
+-- Если кнопка "Цвет трейла" ниже выглядит иначе, чем на видео, которое ты присылал - я не смог его
+-- открыть (ссылки на TikTok недоступны отсюда) и сделал похожую панель по образцу выбора цвета у меток.
+-- ==========================================
+do
+    Settings.TrailColorR = Settings.TrailColorR or 170
+    Settings.TrailColorG = Settings.TrailColorG or 80
+    Settings.TrailColorB = Settings.TrailColorB or 255
+
+    local trailObj, a0, a1 = nil, nil, nil
+
+    local function trailColor()
+        return Color3.fromRGB(Settings.TrailColorR, Settings.TrailColorG, Settings.TrailColorB)
+    end
+
+    local function destroyTrail()
+        if trailObj then trailObj:Destroy() trailObj = nil end
+        if a0 then a0:Destroy() a0 = nil end
+        if a1 then a1:Destroy() a1 = nil end
+    end
+
+    local function buildTrail(char)
+        destroyTrail()
+        if not Settings.TrailEnabled then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        a0 = Instance.new("Attachment")
+        a0.Position = Vector3.new(0, 1, -0.5)
+        a0.Parent = root
+        a1 = Instance.new("Attachment")
+        a1.Position = Vector3.new(0, -1, -0.5)
+        a1.Parent = root
+
+        trailObj = Instance.new("Trail")
+        trailObj.Attachment0 = a0
+        trailObj.Attachment1 = a1
+        trailObj.Lifetime = 0.9
+        trailObj.MinLength = 0.05
+        trailObj.LightEmission = 0.8
+        trailObj.Color = ColorSequence.new(trailColor())
+        trailObj.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.15),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        trailObj.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trailObj.Parent = root
+    end
+
+    local function refreshColor()
+        if trailObj then trailObj.Color = ColorSequence.new(trailColor()) end
+    end
+
+    LocalPlayer.CharacterAdded:Connect(function(char) task.defer(buildTrail, char) end)
+    if LocalPlayer.Character then buildTrail(LocalPlayer.Character) end
+
+    -- ---------- выбор цвета (та же панель, что и у меток: поле SV + полоса оттенков) ----------
+    destroyOldGui("RebzyyxTrailColorGui")
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "RebzyyxTrailColorGui"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 10
+    gui.Parent = GuiParent
+
+    local SV_W, SV_H = 176, 132
+    local panel = Instance.new("Frame")
+    panel.AnchorPoint = Vector2.new(0, 0.5)
+    panel.Position = UDim2.new(0, 260, 0.5, 0)
+    panel.Size = UDim2.fromOffset(212, 190)
+    panel.BackgroundColor3 = Color3.fromRGB(26, 24, 40)
+    panel.BackgroundTransparency = 0.2
+    panel.Visible = false
+    panel.Parent = gui
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(215, 205, 240)
+        st.Transparency = 0.35
+        st.Thickness = 1.5
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st.Parent = panel
+    end
+
+    local title = Instance.new("TextLabel")
+    title.Position = UDim2.fromOffset(10, 8)
+    title.Size = UDim2.fromOffset(150, 18)
+    title.BackgroundTransparency = 1
+    title.Text = "Цвет трейла"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = panel
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Position = UDim2.fromOffset(180, 6)
+    closeBtn.Size = UDim2.fromOffset(22, 22)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(90, 30, 40)
+    closeBtn.BackgroundTransparency = 0.3
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 11
+    closeBtn.Parent = panel
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+    closeBtn.MouseButton1Click:Connect(function() panel.Visible = false end)
+
+    local svFrame = Instance.new("Frame")
+    svFrame.Position = UDim2.fromOffset(10, 32)
+    svFrame.Size = UDim2.fromOffset(SV_W, SV_H)
+    svFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    svFrame.BorderSizePixel = 0
+    svFrame.Active = true
+    svFrame.Parent = panel
+    Instance.new("UICorner", svFrame).CornerRadius = UDim.new(0, 8)
+    do
+        local white = Instance.new("Frame")
+        white.Size = UDim2.fromScale(1, 1)
+        white.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        white.BorderSizePixel = 0
+        white.Parent = svFrame
+        Instance.new("UICorner", white).CornerRadius = UDim.new(0, 8)
+        local wg = Instance.new("UIGradient")
+        wg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
+        wg.Parent = white
+
+        local black = Instance.new("Frame")
+        black.Size = UDim2.fromScale(1, 1)
+        black.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        black.BorderSizePixel = 0
+        black.Parent = svFrame
+        Instance.new("UICorner", black).CornerRadius = UDim.new(0, 8)
+        local bg = Instance.new("UIGradient")
+        bg.Rotation = 90
+        bg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) })
+        bg.Parent = black
+    end
+    local svHandle = Instance.new("Frame")
+    svHandle.AnchorPoint = Vector2.new(0.5, 0.5)
+    svHandle.Size = UDim2.fromOffset(14, 14)
+    svHandle.BackgroundTransparency = 1
+    svHandle.ZIndex = 5
+    svHandle.Parent = svFrame
+    Instance.new("UICorner", svHandle).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(255, 255, 255)
+        st.Thickness = 2
+        st.Parent = svHandle
+    end
+
+    local hueBar = Instance.new("Frame")
+    hueBar.Position = UDim2.fromOffset(196, 32)
+    hueBar.Size = UDim2.fromOffset(16, SV_H)
+    hueBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    hueBar.BorderSizePixel = 0
+    hueBar.Active = true
+    hueBar.Parent = panel
+    Instance.new("UICorner", hueBar).CornerRadius = UDim.new(0, 8)
+    do
+        local g = Instance.new("UIGradient")
+        g.Rotation = 90
+        local keys = {}
+        for i = 0, 6 do table.insert(keys, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6, 1, 1))) end
+        g.Color = ColorSequence.new(keys)
+        g.Parent = hueBar
+    end
+    local hueHandle = Instance.new("Frame")
+    hueHandle.AnchorPoint = Vector2.new(0.5, 0.5)
+    hueHandle.Size = UDim2.fromOffset(20, 8)
+    hueHandle.BackgroundTransparency = 1
+    hueHandle.ZIndex = 5
+    hueHandle.Parent = hueBar
+    Instance.new("UICorner", hueHandle).CornerRadius = UDim.new(1, 0)
+    do
+        local st = Instance.new("UIStroke")
+        st.Color = Color3.fromRGB(255, 255, 255)
+        st.Thickness = 2
+        st.Parent = hueHandle
+    end
+
+    local ph, ps, pv = trailColor():ToHSV()
+
+    local function updatePicker()
+        svFrame.BackgroundColor3 = Color3.fromHSV(ph, 1, 1)
+        svHandle.Position = UDim2.fromOffset(ps * SV_W, (1 - pv) * SV_H)
+        hueHandle.Position = UDim2.fromOffset(8, ph * SV_H)
+    end
+    updatePicker()
+
+    local function applyColor()
+        local c = Color3.fromHSV(ph, ps, pv)
+        Settings.TrailColorR = math.floor(c.R * 255 + 0.5)
+        Settings.TrailColorG = math.floor(c.G * 255 + 0.5)
+        Settings.TrailColorB = math.floor(c.B * 255 + 0.5)
+        refreshColor()
+        updatePicker()
+    end
+
+    local function bindDrag(obj, handler)
+        local dragging = false
+        obj.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                handler(Vector2.new(input.Position.X, input.Position.Y))
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                handler(Vector2.new(input.Position.X, input.Position.Y))
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+        end)
+    end
+    bindDrag(svFrame, function(mouse)
+        local rel = mouse - svFrame.AbsolutePosition
+        ps = math.clamp(rel.X / SV_W, 0, 1)
+        pv = 1 - math.clamp(rel.Y / SV_H, 0, 1)
+        applyColor()
+    end)
+    bindDrag(hueBar, function(mouse)
+        local rel = mouse - hueBar.AbsolutePosition
+        ph = math.clamp(rel.Y / SV_H, 0, 0.999)
+        applyColor()
+    end)
+
+    -- ---------- кнопки в худе ----------
+    createToggleButton("Трейл", 28, Settings.TrailEnabled, function(v)
+        Settings.TrailEnabled = v
+        if LocalPlayer.Character then buildTrail(LocalPlayer.Character) end
+    end)
+    createActionEnumButton(29, "Цвет трейла", function()
+        animatePanelToggle(panel, not panel.Visible)
+    end)
+end
 
 -- ==========================================
 -- СВЕТ В ТЁМНЫХ МЕСТАХ
@@ -5940,10 +6345,9 @@ initHitSound()
 end
 
 -- ==========================================
--- TRIGGERBOT: сам стреляет, когда аимбот навёлся на игрока
--- Условия: включён TriggerBot и аимбот, аим зажат/включён, у аимбота есть цель (она видна, не за стеной),
--- и прицел (центр экрана) реально смотрит на эту цель. Выстрел - клик мыши экзекутора (mouse1click),
--- если его нет - Tool:Activate() у предмета в руках.
+-- TRIGGERBOT: сам стреляет, когда зажата заданная клавиша, аимбот навёлся на игрока и прицел смотрит
+-- точно на него. Пока клавиша не задана кнопкой "Бинд TriggerBot" в худе, он не делает ничего.
+-- Выстрел - клик мыши экзекутора (mouse1click), если его нет - Tool:Activate() у предмета в руках.
 -- ==========================================
 do
 local function initTriggerBot()
@@ -5969,7 +6373,9 @@ local function initTriggerBot()
 
     RunService.Heartbeat:Connect(function()
         safeStep("TriggerBot", function()
-            if not Settings.TriggerBot or not Settings.AimbotEnabled or not IsAiming then return end
+            if Settings.TriggerBotKey == Enum.KeyCode.Unknown then return end
+            if not UserInputService:IsKeyDown(Settings.TriggerBotKey) then return end
+            if not Settings.AimbotEnabled or not IsAiming then return end
             if Freecam.Active or IsRobloxMenuOpen then return end
 
             local part = AimTargetPart
@@ -6194,6 +6600,17 @@ local function initCreatorPanel()
 
     local AmICreator = CREATOR_USER_ID ~= 0 and LocalPlayer.UserId == CREATOR_USER_ID
 
+    -- "Дружок": доступ к мем-алертам и чату панели, но не к чёрному списку; КД 40с на все мем-алерты
+    local BUDDY_USERNAME = "KPyTON_HEGP"
+    local BUDDY_USER_ID = 0
+    task.spawn(function()
+        local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(BUDDY_USERNAME) end)
+        if ok and type(id) == "number" then BUDDY_USER_ID = id end
+    end)
+    local function amIBuddy()
+        return BUDDY_USER_ID ~= 0 and LocalPlayer.UserId == BUDDY_USER_ID
+    end
+
     local function broadcastBlacklist()
         if not (AmICreator and NetSend) then return end
         local ids = {}
@@ -6401,7 +6818,7 @@ local function initCreatorPanel()
     Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
     glassRim(header, 0.5)
 
-    if not AmICreator then
+    if not (AmICreator or amIBuddy()) then
         local note = Instance.new("TextLabel")
         note.Position = UDim2.fromOffset(8, 42)
         note.Size = UDim2.new(1, -16, 0, 60)
@@ -6422,7 +6839,7 @@ local function initCreatorPanel()
         local function makeTab(x, text)
             local b = Instance.new("TextButton")
             b.Position = UDim2.fromOffset(x, 0)
-            b.Size = UDim2.fromOffset(136, 26)
+            b.Size = UDim2.fromOffset(96, 26)
             b.BackgroundColor3 = Color3.fromRGB(45, 40, 65)
             b.BackgroundTransparency = 0.35
             b.Text = text
@@ -6434,24 +6851,46 @@ local function initCreatorPanel()
             glassRim(b, 0.6)
             return b
         end
-        local tabBl = makeTab(0, "Чёрный список")
-        local tabMeme = makeTab(148, "Мем-алерты")
+        local tabBl, tabMeme, tabChat
+        local tx = 0
+        if AmICreator then
+            tabBl = makeTab(tx, "Чёрный список")
+            tx = tx + 100
+        end
+        tabMeme = makeTab(tx, "Мем-алерты")
+        tx = tx + 100
+        tabChat = makeTab(tx, "Чат")
 
         local blFrame = Instance.new("Frame")
         blFrame.Position = UDim2.fromOffset(8, 76)
         blFrame.Size = UDim2.new(1, -16, 1, -84)
         blFrame.BackgroundTransparency = 1
+        blFrame.Visible = AmICreator
         blFrame.Parent = panel
 
         local memeFrame = Instance.new("Frame")
         memeFrame.Position = UDim2.fromOffset(8, 76)
         memeFrame.Size = UDim2.new(1, -16, 1, -84)
         memeFrame.BackgroundTransparency = 1
-        memeFrame.Visible = false
+        memeFrame.Visible = not AmICreator
         memeFrame.Parent = panel
 
-        tabBl.MouseButton1Click:Connect(function() blFrame.Visible, memeFrame.Visible = true, false end)
-        tabMeme.MouseButton1Click:Connect(function() blFrame.Visible, memeFrame.Visible = false, true end)
+        local chatFrame = Instance.new("Frame")
+        chatFrame.Position = UDim2.fromOffset(8, 76)
+        chatFrame.Size = UDim2.new(1, -16, 1, -84)
+        chatFrame.BackgroundTransparency = 1
+        chatFrame.Visible = false
+        chatFrame.Parent = panel
+
+        local function showTab(which)
+            blFrame.Visible = (which == "bl")
+            memeFrame.Visible = (which == "meme")
+            chatFrame.Visible = (which == "chat")
+        end
+        if tabBl then tabBl.MouseButton1Click:Connect(function() showTab("bl") end) end
+        tabMeme.MouseButton1Click:Connect(function() showTab("meme") end)
+        tabChat.MouseButton1Click:Connect(function() showTab("chat") end)
+
 
         -- ---------- вкладка "Чёрный список" ----------
         local addRow = Instance.new("Frame")
@@ -6641,6 +7080,14 @@ local function initCreatorPanel()
                 showToast("Сеть скрипта недоступна", Color3.fromRGB(200, 200, 210))
                 return
             end
+            if not AmICreator then
+                local remaining = CooldownState.memeEnd - os.clock()
+                if remaining > 0 then
+                    showToast("КД мем-алертов: " .. math.ceil(remaining) .. " с", Color3.fromRGB(200, 200, 210))
+                    return
+                end
+                CooldownState.memeEnd = os.clock() + 40
+            end
             NetSend({ k = "meme", target = selectedTarget, preset = preset })
             showToast("Мем-алерт отправлен", Color3.fromRGB(190, 120, 255))
         end
@@ -6674,13 +7121,257 @@ local function initCreatorPanel()
         hint.Font = Enum.Font.Gotham
         hint.TextSize = 11
         hint.Parent = memeFrame
+
+        -- ---------- вкладка "Чат" (работает и с теми, кого сейчас нет на сервере) ----------
+        -- Контакты и история переписки хранятся в файле, поэтому доступны и офлайн.
+        -- Доставка новым сообщением возможна, только пока ntfy.sh ещё хранит их в своём кэше
+        -- (на публичном сервере обычно порядка нескольких часов) - это не гарантированная история навсегда.
+        local CONTACTS_FILE = "RebzyyxHub_contacts.json"
+        local chatHttpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+            or (fluxus and fluxus.request)
+
+        local Contacts = {} -- [UserId] = { name = "...", log = { {from, text, t}, ... } }
+
+        local function saveContacts()
+            pcall(function()
+                if not writefile then return end
+                writefile(CONTACTS_FILE, NetHttp:JSONEncode(Contacts))
+            end)
+        end
+        local function loadContacts()
+            pcall(function()
+                if not (isfile and readfile and isfile(CONTACTS_FILE)) then return end
+                local data = NetHttp:JSONDecode(readfile(CONTACTS_FILE))
+                if type(data) == "table" then Contacts = data end
+            end)
+        end
+        loadContacts()
+
+        local function rememberContact(userId, name)
+            userId = tostring(userId)
+            if not Contacts[userId] then
+                Contacts[userId] = { name = name, log = {} }
+            else
+                Contacts[userId].name = name
+            end
+        end
+        for userId, info in pairs(ScriptUsers) do
+            local pl = Players:GetPlayerByUserId(userId)
+            if pl then rememberContact(userId, pl.Name) end
+        end
+
+        local chatList = Instance.new("ScrollingFrame")
+        chatList.Size = UDim2.new(0, 96, 1, 0)
+        chatList.BackgroundTransparency = 1
+        chatList.BorderSizePixel = 0
+        chatList.ScrollBarThickness = 3
+        chatList.CanvasSize = UDim2.new()
+        chatList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        chatList.Parent = chatFrame
+        local chatListLayout = Instance.new("UIListLayout")
+        chatListLayout.Padding = UDim.new(0, 3)
+        chatListLayout.Parent = chatList
+
+        local logScroll = Instance.new("ScrollingFrame")
+        logScroll.Position = UDim2.fromOffset(102, 0)
+        logScroll.Size = UDim2.new(1, -102, 1, -30)
+        logScroll.BackgroundColor3 = Color3.fromRGB(20, 18, 32)
+        logScroll.BackgroundTransparency = 0.4
+        logScroll.BorderSizePixel = 0
+        logScroll.ScrollBarThickness = 3
+        logScroll.CanvasSize = UDim2.new()
+        logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        logScroll.Parent = chatFrame
+        Instance.new("UICorner", logScroll).CornerRadius = UDim.new(0, 8)
+        local logLayout = Instance.new("UIListLayout")
+        logLayout.Padding = UDim.new(0, 2)
+        logLayout.Parent = logScroll
+
+        local inputBox = Instance.new("TextBox")
+        inputBox.Position = UDim2.new(0, 102, 1, -26)
+        inputBox.Size = UDim2.new(1, -140, 0, 26)
+        inputBox.BackgroundColor3 = Color3.fromRGB(45, 40, 65)
+        inputBox.BackgroundTransparency = 0.35
+        inputBox.PlaceholderText = "Сообщение..."
+        inputBox.Text = ""
+        inputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        inputBox.Font = Enum.Font.Gotham
+        inputBox.TextSize = 12
+        inputBox.ClearTextOnFocus = false
+        inputBox.Parent = chatFrame
+        Instance.new("UICorner", inputBox).CornerRadius = UDim.new(0, 7)
+        do
+            local pad = Instance.new("UIPadding")
+            pad.PaddingLeft = UDim.new(0, 8)
+            pad.Parent = inputBox
+        end
+
+        local sendBtn = Instance.new("TextButton")
+        sendBtn.Position = UDim2.new(1, -36, 1, -26)
+        sendBtn.Size = UDim2.fromOffset(36, 26)
+        sendBtn.BackgroundColor3 = Color3.fromRGB(100, 40, 110)
+        sendBtn.BackgroundTransparency = 0.25
+        sendBtn.Text = ">"
+        sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        sendBtn.Font = Enum.Font.GothamBold
+        sendBtn.TextSize = 14
+        sendBtn.Parent = chatFrame
+        Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0, 7)
+
+        local activeContact = nil
+        local lastSeenId = {} -- [userId] = последний id сообщения из ntfy
+
+        local function dmTopic(otherId)
+            local a, b = LocalPlayer.UserId, otherId
+            if a > b then a, b = b, a end
+            return "rbzx-dm-" .. a .. "-" .. b
+        end
+
+        local function renderLog()
+            for _, c in ipairs(logScroll:GetChildren()) do
+                if c:IsA("TextLabel") then c:Destroy() end
+            end
+            if not activeContact then return end
+            local contact = Contacts[tostring(activeContact)]
+            if not contact then return end
+            for i, m in ipairs(contact.log) do
+                local l = Instance.new("TextLabel")
+                l.Size = UDim2.new(1, -8, 0, 0)
+                l.AutomaticSize = Enum.AutomaticSize.Y
+                l.Position = UDim2.fromOffset(4, 0)
+                l.LayoutOrder = i
+                l.BackgroundTransparency = 1
+                l.TextWrapped = true
+                l.TextXAlignment = Enum.TextXAlignment.Left
+                l.Font = Enum.Font.Gotham
+                l.TextSize = 12
+                l.RichText = true
+                local who = (m.from == "me") and '<font color="#c495ff">Я:</font> ' or '<font color="#9af0c8">Собеседник:</font> '
+                l.Text = who .. m.text:gsub("[<>]", "")
+                l.TextColor3 = Color3.fromRGB(230, 228, 240)
+                l.Parent = logScroll
+            end
+        end
+
+        local function refreshContactList()
+            for _, c in ipairs(chatList:GetChildren()) do
+                if c:IsA("TextButton") then c:Destroy() end
+            end
+            local ids = {}
+            for id in pairs(Contacts) do table.insert(ids, id) end
+            table.sort(ids)
+            for _, id in ipairs(ids) do
+                local info = Contacts[id]
+                local b = Instance.new("TextButton")
+                b.Size = UDim2.new(1, 0, 0, 24)
+                b.BackgroundColor3 = (tostring(activeContact) == id) and Color3.fromRGB(100, 60, 140) or Color3.fromRGB(45, 40, 65)
+                b.BackgroundTransparency = 0.3
+                b.Text = info.name or id
+                b.TextColor3 = Color3.fromRGB(255, 255, 255)
+                b.Font = Enum.Font.Gotham
+                b.TextSize = 11
+                b.Parent = chatList
+                Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+                b.MouseButton1Click:Connect(function()
+                    activeContact = tonumber(id)
+                    refreshContactList()
+                    renderLog()
+                end)
+            end
+        end
+        refreshContactList()
+
+        local function pollDm(otherId)
+            if not chatHttpRequest then return end
+            local ok, res = pcall(function()
+                return chatHttpRequest({
+                    Url = "https://ntfy.sh/" .. dmTopic(otherId) .. "/json?poll=1&since=" .. (lastSeenId[otherId] or "12h"),
+                    Method = "GET",
+                })
+            end)
+            if not ok or type(res) ~= "table" or not (res.StatusCode == 200 or res.Success) then return end
+            local changed = false
+            for line in string.gmatch(tostring(res.Body), "[^\r\n]+") do
+                local okLine, event = pcall(function() return NetHttp:JSONDecode(line) end)
+                if okLine and type(event) == "table" and event.event == "message" then
+                    if type(event.id) == "string" then lastSeenId[otherId] = event.id end
+                    local okMsg, msg = pcall(function() return NetHttp:JSONDecode(tostring(event.message)) end)
+                    if okMsg and type(msg) == "table" and msg.u == otherId and type(msg.text) == "string" then
+                        rememberContact(otherId, tostring(msg.n or otherId))
+                        table.insert(Contacts[tostring(otherId)].log, { from = "them", text = msg.text, t = os.time() })
+                        changed = true
+                    end
+                end
+            end
+            if changed then
+                saveContacts()
+                if activeContact == otherId then renderLog() end
+            end
+        end
+
+        -- опрашиваем только пока открыт чат с конкретным собеседником, чтобы не спамить сервис
+        task.spawn(function()
+            while gui.Parent do
+                task.wait(4)
+                if panel.Visible and chatFrame.Visible and activeContact then
+                    pollDm(activeContact)
+                end
+            end
+        end)
+
+        local function sendDm()
+            local text = inputBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+            if text == "" or not activeContact or not chatHttpRequest then return end
+            inputBox.Text = ""
+
+            rememberContact(activeContact, Contacts[tostring(activeContact)].name)
+            table.insert(Contacts[tostring(activeContact)].log, { from = "me", text = text, t = os.time() })
+            saveContacts()
+            renderLog()
+
+            local payload = NetHttp:JSONEncode({ u = LocalPlayer.UserId, n = LocalPlayer.Name, text = text })
+            pcall(function()
+                chatHttpRequest({
+                    Url = "https://ntfy.sh/" .. dmTopic(activeContact),
+                    Method = "POST",
+                    Headers = { ["Content-Type"] = "text/plain" },
+                    Body = payload,
+                })
+            end)
+        end
+        sendBtn.MouseButton1Click:Connect(sendDm)
+        inputBox.FocusLost:Connect(function(enterPressed)
+            if enterPressed then sendDm() end
+        end)
+
+        -- новых собеседников, с кем встретились на сервере, подхватываем в список автоматически
+        task.spawn(function()
+            while gui.Parent do
+                task.wait(3)
+                local changed = false
+                for userId in pairs(ScriptUsers) do
+                    if not Contacts[tostring(userId)] then
+                        local pl = Players:GetPlayerByUserId(userId)
+                        if pl then
+                            rememberContact(userId, pl.Name)
+                            changed = true
+                        end
+                    end
+                end
+                if changed then
+                    saveContacts()
+                    refreshContactList()
+                end
+            end
+        end)
+
     end
 
     UserInputService.InputBegan:Connect(function(input)
         if input.KeyCode ~= PANEL_KEY_MAIN then return end
         if not UserInputService:IsKeyDown(PANEL_KEY_MOD) then return end
         if HudKeyListening or Freecam.Listening or UserInputService:GetFocusedTextBox() then return end
-        panel.Visible = not panel.Visible
+        animatePanelToggle(panel, not panel.Visible)
     end)
 
     print("[Rebzyyx] Панель создателя: LeftShift+J" .. (AmICreator and " (доступна)" or " (не доступна - ты не создатель)"))
