@@ -1,524 +1,757 @@
--- ==========================================
--- НАСТРОЙКИ (SETTINGS)
--- ==========================================
-local Settings = {
-    MaxDistance = 1800, -- Максимальная дистанция видимости ников (в студсах)
-    HealthBarDistance = 250, -- Максимальная дистанция видимости HP бара (в студсах)
-
-    -- Настройки уведомления
-    ShowNotification = true, -- Показывать уведомление при запуске скрипта
-
-    -- Настройки для друзей
-    RainbowFriends = true, -- Радужная подсветка модели (Highlight) для друзей
-    HideFriendsNames = true, -- Скрывать никнейм у друзей
-    CustomFriendName = "[Друг]", -- Текст вместо имени друга
-
-    -- Настройки для остальных игроков
-    HideOtherNames = false, -- Скрывать никнейм у обычных игроков
-    CustomOtherName = "[Игрок]", -- Текст вместо имени обычного игрока
-
-    -- Настройки персональных частиц (для LocalPlayer и друзей)
-    EnablePersonalTrail = true, -- Трейл для тебя
-    EnableFriendsTrail = true, -- Трейл для друзей
-    TrailTexture = "rbxassetid://13437295831", -- Текстура звездочки (50% деление по диагонали)
-    TrailLifetime = 1.2, -- Длительность жизни каждой звездочки (в секундах)
-    ParticleRate = 40, -- Количество звездочек в секунду
-    GravityForce = -12 -- Сила гравитации (насколько быстро звездочки падают)
-}
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local StarterGui = game:GetService("StarterGui")
-local LocalPlayer = Players.LocalPlayer
-
-local Cache = {} -- [Player] = boolean (IsFriend)
-local ESP = {}   -- [Player] = { root, hl, gui, lbl, hpGui, hpFill, hpGradient, lowHpLbl, humanoid, teamConn, connections }
-
--- Отправка уведомления о запуске
-if Settings.ShowNotification then
-    task.spawn(function()
-        pcall(function()
-            StarterGui:SetCore("SendNotification", {
-                Title = "ESP by XXXSF_ENFP",
-                Text = "Script injected!",
-                Duration = 5
-            })
-        end)
-    end)
-end
-
--- ==========================================
--- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
--- ==========================================
-
--- Конвертация Color3 в HEX
-local function colorToHex(color)
-    return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
-end
-
--- Проверка статуса друга
-local function checkFriendship(player)
-    if Cache[player] ~= nil then
-        return Cache[player]
-    end
-
-    Cache[player] = false
-
-    task.spawn(function()
-        local ok, res = pcall(function()
-            return LocalPlayer:IsFriendsWith(player.UserId)
-        end)
-        Cache[player] = ok and res or false
-    end)
-
-    return Cache[player]
-end
-
--- Создание эмиттера диагональных фиолетово-черных звездочек (для себя и друзей)
-local function setupTrailForCharacter(char)
-    if not char then return end
-
-    local root = char:WaitForChild("HumanoidRootPart", 10)
-    if not root then return end
-
-    -- Удаляем старые эмиттеры/трейлы, если они были
-    local oldEmitter = root:FindFirstChild("PersonalParticleTrail")
-    if oldEmitter then oldEmitter:Destroy() end
-    local oldTrail = char:FindFirstChild("PersonalTrail")
-    if oldTrail then oldTrail:Destroy() end
-
-    -- Создание ParticleEmitter
-    local emitter = Instance.new("ParticleEmitter")
-    emitter.Name = "PersonalParticleTrail"
-    emitter.Texture = Settings.TrailTexture
-    emitter.Rate = Settings.ParticleRate
-    emitter.Lifetime = NumberRange.new(Settings.TrailLifetime * 0.8, Settings.TrailLifetime)
-    
-    -- Физика: движение и гравитация вниз
-    emitter.Speed = NumberRange.new(2, 4) -- Скорость вылета
-    emitter.VelocitySpread = 35 -- Угол разлета частиц
-    emitter.Acceleration = Vector3.new(0, Settings.GravityForce, 0) -- Ускорение падения вниз
-    emitter.Drag = 1.2 -- Сопротивление воздуха
-    
-    -- Плавное изменение размера звездочек
-    emitter.Size = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0),
-        NumberSequenceKeypoint.new(0.2, 0.7),
-        NumberSequenceKeypoint.new(0.7, 0.5),
-        NumberSequenceKeypoint.new(1, 0)
-    })
-    
-    -- Вращение звездочек в полете
-    emitter.RotSpeed = NumberRange.new(-120, 120)
-    emitter.Rotation = NumberRange.new(0, 360)
-
-    -- Эффекты освещения
-    emitter.LightEmission = 0.7
-    emitter.LightInfluence = 0.1
-
-    -- Цвет окрашивает белую половину текстуры звездочки в фиолетовый,
-    -- оставляя черную половину нетронутой (получается 50% покраска наискось)
-    local startColor = Color3.fromRGB(170, 0, 255) -- Ярко-фиолетовый
-    local endColor = Color3.fromRGB(70, 0, 120)    -- Темно-фиолетовый в конце жизни
-
-    emitter.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, startColor),
-        ColorSequenceKeypoint.new(1, endColor)
-    })
-
-    -- Плавный прозрачный запуск и исчезновение
-    emitter.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(0.15, 0.05),
-        NumberSequenceKeypoint.new(0.7, 0.3),
-        NumberSequenceKeypoint.new(1, 1)
-    })
-
-    emitter.Parent = root
-end
-
--- Безопасное удаление объектов ESP для персонажа
-local function cleanupCharESP(pData)
-    if not pData then return end
-    
-    if pData.connections then
-        for _, conn in ipairs(pData.connections) do
-            if conn and conn.Connected then
-                conn:Disconnect()
-            end
-        end
-    end
-    pData.connections = {}
-
-    if pData.hl then pData.hl:Destroy() end
-    if pData.gui then pData.gui:Destroy() end
-    if pData.hpGui then pData.hpGui:Destroy() end
-    
-    pData.hl = nil
-    pData.gui = nil
-    pData.lbl = nil 
-    pData.root = nil
-    pData.hpGui = nil
-    pData.hpFill = nil
-    pData.hpGradient = nil
-    pData.lowHpLbl = nil
-    pData.humanoid = nil
-end
-
--- Полная очистка при выходе игрока
-local function cleanupPlayer(player)
-    if ESP[player] then
-        if ESP[player].teamConn then
-            ESP[player].teamConn:Disconnect()
-        end
-        cleanupCharESP(ESP[player])
-        ESP[player] = nil
-    end
-    Cache[player] = nil
-end
-
--- Обновление цвета ESP
-local function updatePlayerColor(player)
-    local data = ESP[player]
-    if not data or not data.hl or not data.hl.Parent then return end
-
-    if not Cache[player] then
-        local teamColor = player.TeamColor and player.TeamColor.Color or Color3.new(1, 1, 1)
-        data.hl.FillColor = teamColor
-        data.hl.OutlineColor = teamColor
-    end
-end
-
--- Создание ESP для персонажа
-local function setupCharacter(player, char)
-    if player == LocalPlayer then return end
-
-    local data = ESP[player]
-    if not data then return end
-
-    cleanupCharESP(data)
-
-    local head = char:WaitForChild("Head", 10)
-    local root = char:WaitForChild("HumanoidRootPart", 10)
-    local humanoid = char:WaitForChild("Humanoid", 10)
-    if not head or not root or not humanoid then return end
-
-    -- Отключение стандартного ника и HP bar Roblox
-    humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-
-    -- Highlight
-    local hl = Instance.new("Highlight")
-    hl.Name = "ESP_HL"
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.FillTransparency = 0.5
-    hl.OutlineTransparency = 0
-    hl.Parent = char
-
-    -- BillboardGui для ника
-    local gui = Instance.new("BillboardGui")
-    gui.Name = "ESP_GUI"
-    gui.Size = UDim2.new(0, 200, 0, 50)
-    gui.StudsOffset = Vector3.new(0, 3.5, 0)
-    gui.AlwaysOnTop = true
-    gui.Enabled = false
-    gui.Parent = head
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.fromScale(1, 1)
-    lbl.BackgroundTransparency = 1
-    lbl.TextColor3 = Color3.new(1, 1, 1)
-    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
-    lbl.TextStrokeTransparency = 0
-    lbl.Font = Enum.Font.SourceSansBold
-    lbl.TextSize = 16
-    lbl.RichText = true
-    lbl.Parent = gui
-
-    -- BillboardGui для HP бара
-    local hpGui = Instance.new("BillboardGui")
-    hpGui.Name = "ESP_HP_GUI"
-    hpGui.Size = UDim2.new(0, 6, 0, 50)
-    hpGui.StudsOffset = Vector3.new(-2.2, 0, 0)
-    hpGui.AlwaysOnTop = true
-    hpGui.Enabled = false
-    hpGui.Parent = root
-
-    -- Фон HP бара
-    local hpBG = Instance.new("Frame")
-    hpBG.Size = UDim2.fromScale(1, 1)
-    hpBG.BackgroundColor3 = Color3.new(0, 0, 0)
-    hpBG.BorderSizePixel = 0
-    hpBG.ClipsDescendants = false
-    hpBG.Parent = hpGui
-
-    local bgCorner = Instance.new("UICorner")
-    bgCorner.CornerRadius = UDim.new(1, 0)
-    bgCorner.Parent = hpBG
-
-    -- Заполнение шкалы HP
-    local hpFill = Instance.new("Frame")
-    hpFill.Name = "Fill"
-    hpFill.AnchorPoint = Vector2.new(0, 1)
-    hpFill.Position = UDim2.fromScale(0, 1)
-    hpFill.Size = UDim2.fromScale(1, 1)
-    hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
-    hpFill.BorderSizePixel = 0
-    hpFill.Parent = hpBG
-
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = hpFill
-
-    local hpGradient = Instance.new("UIGradient")
-    hpGradient.Rotation = 90
-    hpGradient.Enabled = false
-    hpGradient.Parent = hpFill
-
-    -- Текст LOW HP!
-    local lowHpLbl = Instance.new("TextLabel")
-    lowHpLbl.Name = "LowHpLabel"
-    lowHpLbl.Size = UDim2.new(0, 60, 0, 14)
-    lowHpLbl.Position = UDim2.new(1, 4, 0.5, -7)
-    lowHpLbl.BackgroundTransparency = 1
-    lowHpLbl.TextColor3 = Color3.fromRGB(255, 30, 30)
-    lowHpLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    lowHpLbl.TextStrokeTransparency = 0
-    lowHpLbl.Font = Enum.Font.SourceSansBold
-    lowHpLbl.TextSize = 13
-    lowHpLbl.Text = "LOW HP!"
-    lowHpLbl.TextXAlignment = Enum.TextXAlignment.Left
-    lowHpLbl.Visible = false
-    lowHpLbl.Parent = hpBG
-
-    -- Сохранение ссылок
-    data.root = root
-    data.hl = hl
-    data.gui = gui
-    data.lbl = lbl
-    data.hpGui = hpGui
-    data.hpFill = hpFill
-    data.hpGradient = hpGradient
-    data.lowHpLbl = lowHpLbl
-    data.humanoid = humanoid
-
-    local connections = {}
-
-    local function watchDestroy(obj)
-        local conn = obj.AncestryChanged:Connect(function(_, parent)
-            if not parent and player.Character == char then
-                task.defer(function()
-                    if player.Character == char then
-                        setupCharacter(player, char)
-                    end
-                end)
-            end
-        end)
-        table.insert(connections, conn)
-    end
-
-    watchDestroy(gui)
-    watchDestroy(hpGui)
-    watchDestroy(hl)
-
-    local connGuiTop = gui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
-        if not gui.AlwaysOnTop then gui.AlwaysOnTop = true end
-    end)
-    local connHpTop = hpGui:GetPropertyChangedSignal("AlwaysOnTop"):Connect(function()
-        if not hpGui.AlwaysOnTop then hpGui.AlwaysOnTop = true end
-    end)
-    table.insert(connections, connGuiTop)
-    table.insert(connections, connHpTop)
-
-    data.connections = connections
-
-    updatePlayerColor(player)
-end
-
--- Проверка и создание трейла для игрока
-local function handleTrail(player, char)
-    if not char then return end
-
-    if player == LocalPlayer then
-        if Settings.EnablePersonalTrail then
-            setupTrailForCharacter(char)
-        end
-    else
-        if Settings.EnableFriendsTrail then
-            task.spawn(function()
-                local isFriend = checkFriendship(player)
-                -- Дополнительное ожидание обновления кэша при первом вызове
-                if not isFriend and Cache[player] == nil then
-                    task.wait(0.5)
-                    isFriend = Cache[player] or false
-                end
-
-                if isFriend then
-                    setupTrailForCharacter(char)
-                end
-            end)
-        end
-    end
-end
-
--- Инициализация игрока
-local function applyESP(player)
-    if player == LocalPlayer then
-        if player.Character then
-            task.spawn(handleTrail, player, player.Character)
-        end
-        player.CharacterAdded:Connect(function(char)
-            task.spawn(handleTrail, player, char)
-        end)
-        return
-    end
-
-    local teamConn = player:GetPropertyChangedSignal("TeamColor"):Connect(function()
-        updatePlayerColor(player)
-    end)
-
-    ESP[player] = {
-        teamConn = teamConn,
-        connections = {}
-    }
-
-    checkFriendship(player)
-
-    player.CharacterAdded:Connect(function(char)
-        setupCharacter(player, char)
-        task.spawn(handleTrail, player, char)
-    end)
-
-    if player.Character then
-        task.spawn(setupCharacter, player, player.Character)
-        task.spawn(handleTrail, player, player.Character)
-    end
-end
-
--- ==========================================
--- ОСНОВНОЙ ЦИКЛ И ИНИЦИАЛИЗАЦИЯ
--- ==========================================
-
-RunService.RenderStepped:Connect(function()
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-    local rainbow = Color3.fromHSV((tick() % 3) / 3, 1, 1)
-    local pulseAlpha = (math.sin(tick() * 10) + 1) / 2
-
-    for p, data in pairs(ESP) do
-        if p.Character and p.Character.Parent then
-            if not data.gui or not data.gui.Parent or not data.hpGui or not data.hpGui.Parent or not data.hl or not data.hl.Parent then
-                setupCharacter(p, p.Character)
-            end
-        end
-
-        if data.gui and data.root and data.root.Parent then
-            local isPlayerFriend = Cache[p]
-
-            if Settings.RainbowFriends and isPlayerFriend and data.hl then
-                data.hl.FillColor = rainbow
-                data.hl.OutlineColor = rainbow
-            end
-
-            if myRoot then
-                local dist = (myRoot.Position - data.root.Position).Magnitude
-                
-                if dist <= Settings.MaxDistance then
-                    local displayName = p.DisplayName
-
-                    if isPlayerFriend then
-                        if Settings.HideFriendsNames then
-                            displayName = Settings.CustomFriendName
-                        end
-                    else
-                        if Settings.HideOtherNames then
-                            displayName = Settings.CustomOtherName
-                        end
-                    end
-
-                    local teamColor = p.TeamColor and p.TeamColor.Color or Color3.new(1, 1, 1)
-                    local nameColorHex = colorToHex(teamColor)
-
-                    data.lbl.Text = string.format("<font color=\"%s\">%s</font>\n[%d studs]", nameColorHex, displayName, math.floor(dist))
-                    data.gui.Enabled = true
-                else
-                    data.gui.Enabled = false
-                end
-
-                if dist <= Settings.HealthBarDistance and data.hpGui and data.humanoid then
-                    local health = math.clamp(data.humanoid.Health, 0, data.humanoid.MaxHealth)
-                    local maxHealth = math.max(data.humanoid.MaxHealth, 1)
-                    local hpPercent = health / maxHealth
-
-                    data.hpFill.Size = UDim2.fromScale(1, hpPercent)
-
-                    local darkRed = Color3.fromRGB(150, 0, 0)
-                    local brightRed = Color3.fromRGB(255, 30, 30)
-
-                    if isPlayerFriend then
-                        if hpPercent > 0.25 then
-                            data.hpGradient.Enabled = true
-                            data.hpFill.BackgroundColor3 = Color3.new(1, 1, 1)
-                            data.hpFill.BackgroundTransparency = (1 - hpPercent) * 0.35
-                            
-                            local sat = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
-                            local val = math.clamp(0.45 + (hpPercent * 0.55), 0.45, 1)
-
-                            data.hpGradient.Color = ColorSequence.new({
-                                ColorSequenceKeypoint.new(0, Color3.fromHSV(0, sat, val)),
-                                ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.33, sat, val)),
-                                ColorSequenceKeypoint.new(1, Color3.fromHSV(0.66, sat, val))
-                            })
-                            
-                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
-                        else
-                            data.hpGradient.Enabled = false
-                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
-                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
-
-                            if data.lowHpLbl then
-                                data.lowHpLbl.Visible = true
-                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
-                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
-                            end
-                        end
-                    else
-                        data.hpGradient.Enabled = false
-
-                        if hpPercent <= 0.25 then
-                            data.hpFill.BackgroundColor3 = darkRed:Lerp(brightRed, pulseAlpha)
-                            data.hpFill.BackgroundTransparency = pulseAlpha * 0.4
-
-                            if data.lowHpLbl then
-                                data.lowHpLbl.Visible = true
-                                data.lowHpLbl.TextTransparency = pulseAlpha * 0.5
-                                data.lowHpLbl.TextStrokeTransparency = pulseAlpha * 0.5
-                            end
-                        else
-                            local baseColor = Color3.fromHSV(hpPercent * 0.3, 1, 1)
-                            data.hpFill.BackgroundColor3 = baseColor
-                            data.hpFill.BackgroundTransparency = 0
-
-                            if data.lowHpLbl then data.lowHpLbl.Visible = false end
-                        end
-                    end
-
-                    data.hpGui.Enabled = true
-                elseif data.hpGui then
-                    data.hpGui.Enabled = false
-                end
-            else
-                data.gui.Enabled = false
-                if data.hpGui then data.hpGui.Enabled = false end
-            end
-        end
-    end
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+loadstring(game:HttpGet("https://raw.githubusercontent.com/CookieScript/Deobfuscated/refs/heads/main/Bypass"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/CookieScript/Resources/refs/heads/main/a"))()
+local r0_0 = loadstring(game:HttpGet("https://raw.githubusercontent.com/LuarmorIsGay5/automatic-spork/refs/heads/main/Library.txt", true))()
+local r1_0 = Instance.new("ScreenGui")
+r1_0.Parent = game.CoreGui
+local r2_0 = Instance.new("Frame")
+r2_0.Size = UDim2.new(0, 90, 0, 30)
+r2_0.Position = UDim2.new(0, 10, 0, 5)
+r2_0.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+r2_0.BorderColor3 = Color3.fromRGB(255, 255, 255)
+r2_0.BorderSizePixel = 1
+r2_0.Active = true
+r2_0.BackgroundTransparency = 0
+r2_0.Draggable = true
+r2_0.Parent = r1_0
+local r3_0 = Instance.new("TextButton")
+r3_0.Size = UDim2.new(0, 84, 0, 24)
+r3_0.Position = UDim2.new(0, 3, 0, 3)
+r3_0.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+r3_0.BorderColor3 = Color3.fromRGB(0, 0, 0)
+r3_0.BorderSizePixel = 0
+r3_0.Text = "Dino"
+r3_0.BackgroundTransparency = 0
+r3_0.TextColor3 = Color3.new(255, 255, 255)
+r3_0.TextSize = 20
+r3_0.Font = Enum.Font.Arcade
+r3_0.Parent = r2_0
+local r4_0 = Instance.new("UIGradient")
+r4_0.Color = ColorSequence.new({
+  ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 50, 50)),
+  ColorSequenceKeypoint.new(0.5, Color3.fromRGB(250, 250, 250)),
+  ColorSequenceKeypoint.new(1, Color3.fromRGB(50, 50, 50))
+})
+r4_0.Rotation = 90
+r4_0.Parent = r3_0
+r3_0.MouseButton1Click:Connect(function()
+  r0_0.Holder.Visible = not r0_0.Holder.Visible
 end)
-
-for _, p in ipairs(Players:GetPlayers()) do
-    applyESP(p)
+local r5_0 = r0_0:Window({
+  Name = string.format("Dino.lol | v0.0.1 | Source Code | Anti-Lock"),
+  Amount = 5,
+})
+local r6_0 = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  Type = "Customize",
+  Position = {
+    X = 0,
+    Y = 0,
+    Z = 0,
+  },
+  Random = {
+    Minimize = 0,
+    Max = 0,
+  },
+}
+r6_0.Desync = {
+  CFrameDesync = false,
+  NetworkDesync = false,
+  Position = {
+    X = 0,
+    Y = 0,
+    Z = 0,
+  },
+}
+r6_0.PredBreaker = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+}
+r6_0.Multiplier = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  WalkAmount = 2,
+  JumpAmount = 2,
+}
+r6_0.Blatant = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  Amount = 30,
+  Delay = 0.1,
+}
+r6_0.Sky = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  Amount = 500,
+}
+r6_0.UnderGround = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  Amount = 300,
+}
+r6_0.Reverse = {
+  Enabled = false,
+  Keybind = Enum.KeyCode.End,
+  Type = "Velocity",
+  Amount = 2,
+}
+local r7_0 = {}
+r7_0.SelfDot = {
+  Enabled = false,
+  Color = Color3.fromRGB(255, 255, 255),
+  Prediction = {
+    X = 0.138758,
+    Y = 0.08,
+  },
+}
+local r8_0 = game:GetService("Players")
+local r9_0 = game:GetService("RunService")
+local r10_0 = game:GetService("Players").LocalPlayer
+local r11_0 = r8_0.LocalPlayer
+local r13_0 = (r11_0.Character or r11_0.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
+local r14_0 = Instance.new("Part")
+r14_0.Material = Enum.Material.Neon
+r14_0.Anchored = true
+r14_0.CanCollide = false
+r14_0.Color = r7_0.SelfDot.Color
+r14_0.Size = Vector3.new(0.5, 0.5, 0.5)
+r14_0.Transparency = 1
+r14_0.Parent = workspace
+local r15_0 = Instance.new("BillboardGui")
+r15_0.Size = UDim2.new(1, 0, 1, 0)
+r15_0.StudsOffset = Vector3.new(0, 0, 0)
+r15_0.AlwaysOnTop = true
+r15_0.Parent = r14_0
+local r16_0 = Instance.new("Frame")
+r16_0.Size = UDim2.new(0.5, 0, 0.5, 0)
+r16_0.Position = UDim2.new(0.25, 0, 0.25, 0)
+r16_0.BackgroundColor3 = r7_0.SelfDot.Color
+r16_0.BackgroundTransparency = 0
+r16_0.Parent = r15_0
+r9_0.RenderStepped:Connect(function()
+  if r7_0.SelfDot.Enabled then
+    r14_0.Position = r13_0.Position + r13_0.Velocity * Vector3.new(r7_0.SelfDot.Prediction.X, r7_0.SelfDot.Prediction.Y, r7_0.SelfDot.Prediction.X)
+    r14_0.Transparency = 0
+    r16_0.BackgroundTransparency = 0
+  else
+    r14_0.Transparency = 1
+    r16_0.BackgroundTransparency = 1
+  end
+end)
+game:GetService("UserInputService").InputBegan:Connect(function(r0_47, r1_47)
+  if not r1_47 and r0_47.KeyCode == r6_0.Keybind then
+    r6_0.Enabled = not r6_0.Enabled
+  end
+end)
+game:GetService("UserInputService").InputBegan:Connect(function(r0_52, r1_52)
+  if not r1_52 and r0_52.KeyCode == r6_0.Multiplier.Keybind then
+    r6_0.Multiplier.Enabled = not r6_0.Multiplier.Enabled
+  end
+end)
+local r19_0 = game:GetService("UserInputService")
+r19_0.InputBegan:Connect(function(r0_18, r1_18)
+  if not r1_18 and r0_18.KeyCode == r6_0.PredBreaker.Keybind then
+    r6_0.PredBreaker.Enabled = not r6_0.PredBreaker.Enabled
+  end
+end)
+r19_0.InputBegan:Connect(function(r0_56, r1_56)
+  if not r1_56 and r0_56.KeyCode == r6_0.Sky.Keybind then
+    r6_0.Sky.Enabled = not r6_0.Sky.Enabled
+  end
+end)
+game:GetService("UserInputService").InputBegan:Connect(function(r0_7, r1_7)
+  if not r1_7 and r0_7.KeyCode == r6_0.UnderGround.Keybind then
+    r6_0.UnderGround.Enabled = not r6_0.UnderGround.Multiplier.Enabled
+  end
+end)
+game:GetService("UserInputService").InputBegan:Connect(function(r0_57, r1_57)
+  if not r1_57 and r0_57.KeyCode == r6_0.Blatant.Keybind then
+    r6_0.Blatant.Enabled = not r6_0.Blatant.Enabled
+  end
+end)
+game:GetService("UserInputService").InputBegan:Connect(function(r0_27, r1_27)
+  if not r1_27 and r0_27.KeyCode == r6_0.Reverse.Keybind then
+    r6_0.Reverse.Enabled = not r6_0.Reverse.Enabled
+  end
+end)
+function RandomNumberRange(r0_64)
+  return math.random(-r0_64 * 100, r0_64 * 100) / 100
 end
-
-Players.PlayerAdded:Connect(applyESP)
-Players.PlayerRemoving:Connect(cleanupPlayer)
+function RandomVectorRange(r0_61, r1_61, r2_61)
+  return Vector3.new(RandomNumberRange(r0_61), RandomNumberRange(r1_61), RandomNumberRange(r2_61))
+end
+local r23_0 = {}
+r9_0.Heartbeat:Connect(function()
+  if r6_0.Desync.CFrameDesync then
+    r23_0[1] = r10_0.Character.HumanoidRootPart.CFrame
+    r23_0[2] = r10_0.Character.HumanoidRootPart.AssemblyLinearVelocity
+    r10_0.Character.HumanoidRootPart.CFrame = r10_0.Character.HumanoidRootPart.CFrame * CFrame.Angles(math.rad(RandomNumberRange(0)), math.rad(RandomNumberRange(1)), math.rad(RandomNumberRange(0)))
+    r10_0.Character.HumanoidRootPart.AssemblyLinearVelocity = Vector3.new(r6_0.Desync.Position.X, r6_0.Desync.Position.Y, r6_0.Desync.Position.Z)
+    r9_0.RenderStepped:Wait()
+    r10_0.Character.HumanoidRootPart.CFrame = r23_0[1]
+    r10_0.Character.HumanoidRootPart.AssemblyLinearVelocity = r23_0[2]
+  end
+end)
+local r24_0 = false
+r9_0.PostSimulation:Connect(function()
+  if r10_0.Character and r10_0.Character:FindFirstChild("HumanoidRootPart") then
+    if r6_0.Desync.NetworkDesync then
+      r24_0 = not r24_0
+      setfflag("S2PhysicsSenderRate", 1)
+      sethiddenproperty(r10_0.Character.HumanoidRootPart, "NetworkIsSleeping", r24_0)
+    else
+      r24_0 = false
+      setfflag("S2PhysicsSenderRate", 13)
+      sethiddenproperty(r10_0.Character.HumanoidRootPart, "NetworkIsSleeping", r24_0)
+    end
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.Multiplier.Enabled then
+    local r0_67 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_67 * Vector3.new(r6_0.Multiplier.WalkAmount, r6_0.Multiplier.JumpAmount, r6_0.Multiplier.WalkAmount)
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_67
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.PredBreaker.Enabled then
+    local r0_8 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_8
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.Blatant.Enabled then
+    local r0_40 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0, -r6_0.Blatant.Amount, 0)
+    wait(r6_0.Blatant.Delay)
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0, -r6_0.Blatant.Amount, 0)
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_40
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.Sky.Enabled then
+    local r0_1 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0, r6_0.Sky.Amount, 0)
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_1
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.UnderGround.Enabled then
+    local r0_36 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(0, -r6_0.UnderGround.Amount, 0)
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_36
+  end
+end)
+r9_0.Heartbeat:Connect(function()
+  if r6_0.Reverse.Enabled then
+    local r0_9 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    if r6_0.Reverse.Type == "Velocity" then
+      game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = -r0_9 * Vector3.new(r6_0.Reverse.Amount, r6_0.Reverse.Amount, r6_0.Reverse.Amount)
+    end
+    r9_0.RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_9
+  end
+end)
+game:GetService("RunService").Heartbeat:Connect(function()
+  if r6_0.Enabled then
+    local r0_38 = game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity
+    if r6_0.Type == "Customize" then
+      game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(r6_0.Position.X, r6_0.Position.Y, r6_0.Position.Z)
+    elseif r6_0.Type == "Random" then
+      local r1_38 = r6_0.Random.Minimize
+      local r2_38 = r6_0.Random.Max
+      game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = Vector3.new(math.random(r1_38, r2_38), math.random(r1_38, r2_38), math.random(r1_38, r2_38))
+    end
+    game:GetService("RunService").RenderStepped:Wait()
+    game.Players.LocalPlayer.Character.HumanoidRootPart.Velocity = r0_38
+  end
+end)
+hookfunction(game.Players.LocalPlayer.IsInGroup, function()
+  return true
+end)
+local r25_0 = r0_0:Watermark({
+  Name = string.format("Dino.lol | v0.0.1 | Source Code | Anti-Lock", gameName),
+})
+r0_0:ChangeAccent(Color3.fromRGB(255, 255, 255))
+r0_0:Notification("Leaked by Boog X", 10, Color3.fromRGB(255, 255, 255))
+wait(0.5)
+r0_0:Notification("Script Loading..", 10, Color3.fromRGB(255, 255, 255))
+wait(3)
+r0_0:Notification("Script Loaded | Source Code", 10, Color3.fromRGB(255, 255, 255))
+local r26_0 = r0_0:Indicator({
+  Name = "New Indicator",
+})
+local r27_0 = r26_0:NewValue({
+  Name = "New Text",
+  Value = "value here",
+})
+local r28_0 = r26_0:NewBar({
+  Name = "New Bar",
+  Value = 10,
+  Min = 0,
+  Max = 100,
+})
+local r29_0 = r5_0:Page({
+  Name = "Anti",
+  Weapons = true,
+})
+local r30_0 = r5_0:Page({
+  Name = "Visuals",
+  Weapons = true,
+})
+local r31_0 = r5_0:Page({
+  Name = "Settings",
+})
+local r32_0 = r29_0:Weapon({
+  Icon = "rbxassetid://17134553802",
+})
+local r33_0 = r29_0:Weapon({
+  Icon = "rbxassetid://17134553802",
+})
+local r34_0 = r30_0:Weapon({
+  Icon = "rbxassetid://120304994615919",
+})
+r30_0:Weapon({
+  Icon = "rbxassetid://114736089502081",
+}):PlayerList(Properties)
+local r36_0 = r32_0:Section({
+  Name = "Custom Velocity",
+  Side = "Left",
+})
+local r37_0 = r32_0:Section({
+  Name = "Pred Breaker",
+  Side = "Left",
+})
+local r38_0 = r32_0:Section({
+  Name = "Multiplier",
+  Side = "Left",
+})
+local r39_0 = r32_0:Section({
+  Name = "Blatant",
+  Side = "Right",
+})
+local r40_0 = r32_0:Section({
+  Name = "Sky",
+  Side = "Right",
+})
+local r41_0 = r32_0:Section({
+  Name = "UnderGround",
+  Side = "Right",
+})
+local r42_0 = r32_0:Section({
+  Name = "Reverse",
+  Side = "Right",
+})
+local r43_0 = r33_0:Section({
+  Name = "Desyncs",
+  Side = "Left",
+})
+local r44_0 = r34_0:Section({
+  Name = "Visualizer",
+  Side = "Left",
+})
+r36_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_66)
+    r6_0.Enabled = r0_66
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_23)
+    r6_0.Keybind = r0_23
+  end,
+})
+r36_0:List({
+  Name = "Anti Type",
+  Options = {
+    "Customize",
+    "Random"
+  },
+  Default = "Customize",
+  Callback = function(r0_50)
+    r6_0.Type = r0_50
+  end,
+})
+r36_0:Slider({
+  Name = "X Velocity",
+  Default = 0,
+  Min = -5000,
+  Max = 5000,
+  Callback = function(r0_42)
+    r6_0.Position.X = r0_42
+  end,
+})
+r36_0:Slider({
+  Name = "Y Velocity",
+  Default = 0,
+  Min = -5000,
+  Max = 5000,
+  Callback = function(r0_12)
+    r6_0.Position.Y = r0_12
+  end,
+})
+r36_0:Slider({
+  Name = "Z Velocity",
+  Default = 0,
+  Min = -5000,
+  Max = 5000,
+  Callback = function(r0_63)
+    r6_0.Position.Z = r0_63
+  end,
+})
+r36_0:Divider({
+  Name = "Random Velocities",
+})
+r36_0:Slider({
+  Name = "Minimize",
+  Default = 0,
+  Min = -5000,
+  Max = 5000,
+  Callback = function(r0_41)
+    r6_0.Random.Minimize = r0_41
+  end,
+})
+r36_0:Slider({
+  Name = "Max",
+  Default = 0,
+  Min = -5000,
+  Max = 5000,
+  Callback = function(r0_53)
+    r6_0.Random.Max = r0_53
+  end,
+})
+r37_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_3)
+    r6_0.PredBreaker.Enabled = r0_3
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_34)
+    r6_0.PredBreaker.Keybind = r0_34
+  end,
+})
+r38_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_15)
+    r6_0.Multiplier.Enabled = r0_15
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_2)
+    r6_0.Multiplier.Keybind = r0_2
+  end,
+})
+r38_0:Slider({
+  Name = "Walk Amount",
+  Default = 2,
+  Min = 0,
+  Max = 50,
+  Callback = function(r0_29)
+    r6_0.Multiplier.WalkAmount = r0_29
+  end,
+})
+r38_0:Slider({
+  Name = "Jump Amount",
+  Default = 2,
+  Min = 0,
+  Max = 50,
+  Callback = function(r0_26)
+    r6_0.Multiplier.JumpAmount = r0_26
+  end,
+})
+r39_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_19)
+    r6_0.Blatant.Enabled = r0_19
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_58)
+    r6_0.Blatant.Keybind = r0_58
+  end,
+})
+r39_0:Slider({
+  Name = "Amount",
+  Default = 30,
+  Min = 0,
+  Max = 100,
+  Callback = function(r0_35)
+    r6_0.Blatant.Amount = r0_35
+  end,
+})
+r39_0:Textbox({
+  Name = "Delay",
+  Default = "0.1",
+  Callback = function(r0_49)
+    r6_0.Blatant.Delay = r0_49
+  end,
+})
+r40_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_6)
+    r6_0.Sky.Enabled = r0_6
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_4)
+    r6_0.Sky.Keybind = r0_4
+  end,
+})
+r40_0:Slider({
+  Name = "Amount",
+  Default = 500,
+  Min = 0,
+  Max = 500,
+  Callback = function(r0_21)
+    r6_0.Sky.Amount = r0_21
+  end,
+})
+r41_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_62)
+    r6_0.UnderGround.Enabled = r0_62
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_28)
+    r6_0.UnderGround.Keybind = r0_28
+  end,
+})
+r41_0:Slider({
+  Name = "Amount",
+  Default = 300,
+  Min = 0,
+  Max = 500,
+  Callback = function(r0_59)
+    r6_0.UnderGround.Amount = r0_59
+  end,
+})
+r42_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_46)
+    r6_0.Reverse.Enabled = r0_46
+  end,
+}):Keybind({
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_16)
+    r6_0.Reverse.Keybind = r0_16
+  end,
+})
+r42_0:List({
+  Name = "Reverse Type",
+  Options = {
+    "Velocity",
+    "Velocity"
+  },
+  Default = "Velocity",
+  Callback = function(r0_22)
+    r6_0.Reverse.Type = r0_22
+  end,
+})
+r42_0:Slider({
+  Name = "Amount",
+  Default = 2,
+  Min = 0,
+  Max = 50,
+  Callback = function(r0_5)
+    r6_0.Reverse.Amount = r0_5
+  end,
+})
+r43_0:Toggle({
+  Name = "CFrame Desync",
+  Callback = function(r0_30)
+    r6_0.Desync.CFrameDesync = r0_30
+  end,
+})
+r43_0:Toggle({
+  Name = "Network Desync",
+  Callback = function(r0_11)
+    r6_0.Desync.NetworkDesync = r0_11
+  end,
+})
+r43_0:Slider({
+  Name = "X Velocity",
+  Default = 0,
+  Min = -990000,
+  Max = 990000,
+  Callback = function(r0_37)
+    r6_0.Desync.Position.X = r0_37
+  end,
+})
+r43_0:Slider({
+  Name = "Y Velocity",
+  Default = 99999,
+  Min = -990000,
+  Max = 990000,
+  Callback = function(r0_70)
+    r6_0.Desync.Position.Y = r0_70
+  end,
+})
+r43_0:Slider({
+  Name = "Z Velocity",
+  Default = 0,
+  Min = -990000,
+  Max = 990000,
+  Callback = function(r0_43)
+    r6_0.Desync.Position.Z = r0_43
+  end,
+})
+r44_0:Toggle({
+  Name = "Enabled",
+  Callback = function(r0_10)
+    r7_0.SelfDot.Enabled = r0_10
+  end,
+}):Colorpicker({
+  Name = "Color",
+  Default = Color3.fromRGB(255, 255, 255),
+  Callback = function(r0_65)
+    r7_0.SelfDot.Color = r0_65
+  end,
+})
+r44_0:Textbox({
+  Name = "X Pred",
+  Default = "0.138758",
+  Callback = function(r0_25)
+    r7_0.SelfDot.Prediction.X = r0_25
+  end,
+})
+r44_0:Textbox({
+  Name = "Y Pred",
+  Default = "0.09",
+  Callback = function(r0_48)
+    r7_0.SelfDot.Prediction.Y = r0_48
+  end,
+})
+local r45_0 = r31_0:Section({
+  Name = "Config",
+  Zindex = 2,
+})
+local r46_0 = r45_0:List({
+  Name = "Config",
+  Flag = "SettingConfigurationList",
+  Options = {},
+})
+r45_0:Textbox({
+  Flag = "SettingsConfigurationName",
+  Name = "Config Name",
+})
+local r47_0 = {}
+local function r48_0()
+  local r0_31 = {}
+  for r4_31, r5_31 in ipairs(listfiles("Dino_lol/Configs")) do
+    r0_31[#r0_31 + 1] = r5_31:gsub("Dino_lol/Configs\\", ""):gsub(".cfg", "")
+  end
+  local r1_31 = #r0_31 ~= #r47_0
+  if not r1_31 then
+    for r5_31, r6_31 in ipairs(r0_31) do
+      if r6_31 ~= r47_0[r5_31] then
+        r1_31 = true
+        break
+      end
+    end
+  end
+  if r1_31 then
+    r47_0 = r0_31
+    r46_0:Refresh(r47_0)
+  end
+end
+r45_0:Button({
+  Name = "Create",
+  Callback = function()
+    local r0_44, r1_44 = pcall(function()
+      local r0_45 = Flags.SettingsConfigurationName
+      if r0_45 == "" or isfile("Dino_lol/Configs/" .. r0_45 .. ".cfg") then
+        return 
+      end
+      writefile("Dino_lol/Configs/" .. r0_45 .. ".cfg", "")
+      r48_0()
+    end)
+  end,
+}):Button({
+  Name = "Save",
+  Callback = function()
+    local r0_13, r1_13 = pcall(function()
+      local r0_14 = Flags.SettingConfigurationList
+      if r0_14 then
+        writefile("Dino_lol/Configs/" .. r0_14 .. ".cfg", r0_0:GetConfig())
+      end
+    end)
+  end,
+})
+r45_0:Button({
+  Name = "Load",
+  Callback = function()
+    local r0_68, r1_68 = pcall(function()
+      local r0_69 = Flags.SettingConfigurationList
+      if r0_69 then
+        r0_0:LoadConfig(readfile("Dino_lol/Configs/" .. r0_69 .. ".cfg"))
+      end
+    end)
+  end,
+}):Button({
+  Name = "Delete",
+  Callback = function()
+    local r0_39 = Flags.SettingConfigurationList
+    if r0_39 then
+      delfile("Dino_lol/Configs/" .. r0_39 .. ".cfg")
+    end
+    r48_0()
+  end,
+})
+r45_0:Button({
+  Name = "Refresh",
+  Callback = function()
+    r48_0()
+  end,
+})
+r45_0:Keybind({
+  Name = "Menu Key",
+  Flag = "MenuKey",
+  UseKey = true,
+  Default = Enum.KeyCode.End,
+  Callback = function(r0_51)
+    r0_0.UIKey = r0_51
+  end,
+})
+r45_0:Colorpicker({
+  Name = "Menu Accent",
+  Flag = "MenuAccent",
+  Default = r0_0.Accent,
+  Callback = function(r0_17)
+    r0_0:ChangeAccent(r0_17)
+  end,
+})
+r45_0:Toggle({
+  Name = "Show Watermark",
+  Flag = "Watermark",
+  Callback = function(r0_32)
+    r25_0:SetVisible(r0_32)
+  end,
+})
+r45_0:Textbox({
+  Flag = "WatermarkText",
+  Name = "Watermark Text",
+  State = string.format("Dino.lol | v0.0.1 | Source Code | Anti-Lock"),
+  Callback = function(r0_33)
+    r25_0:UpdateText(r0_33)
+  end,
+})
+-- close: r45_0
+-- close: r0_0
